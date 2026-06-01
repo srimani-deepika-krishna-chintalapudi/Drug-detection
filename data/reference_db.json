@@ -1,0 +1,14 @@
+{
+    "dolo650": {
+        "medicine_name": "dolo 650",
+        "image_path": "C:\\Users\\07\\Downloads\\pharma_carton_auth_system\\data\\reference_images\\dolo650.jpg"
+    },
+    "cetrizine": {
+        "medicine_name": "cetrizine",
+        "image_path": "C:\\Users\\07\\Downloads\\pharma_carton_auth_system\\data\\reference_images\\cetrizine.jpg"
+    },
+    "pand": {
+        "medicine_name": "Pan-D",
+        "image_path": "C:\\Users\\07\\Downloads\\pharma_carton_auth_system\\data\\reference_images\\pand.jpg"
+    }
+}

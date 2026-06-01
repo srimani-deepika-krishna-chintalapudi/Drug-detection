@@ -1,0 +1,16 @@
+streamlit==1.35.0
+opencv-python==4.10.0.84
+pillow==10.4.0
+numpy==1.26.4
+pandas==2.2.2
+paddleocr==2.7.3
+paddlepaddle
+easyocr==1.7.1
+rapidfuzz==3.9.6
+python-Levenshtein==0.25.1
+scikit-image==0.24.0
+scikit-learn==1.5.1
+reportlab==4.2.2
+qrcode==7.4.2
+pyzbar==0.1.9
+python-dateutil==2.9.0.post0
