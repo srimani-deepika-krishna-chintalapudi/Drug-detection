@@ -1,22 +1,47 @@
-Pharmaceutical Carton Authentication System
+# Pharmaceutical Carton Authentication System
 
-This project compares an uploaded medicine carton image with an authentic reference carton image and detects possible differences such as text mismatch, font/typography changes, alignment issues, crop differences, and visual inconsistencies.
+## Overview
 
-It is mainly built for verifying pharmaceutical cartons like PAN-D by comparing fake/suspect carton images against a stored original reference image.
+This project compares an uploaded pharmaceutical carton image against an authentic reference carton image and identifies potential differences such as:
+
+- Text mismatches
+- Typography variations
+- Alignment issues
+- Layout inconsistencies
+- Crop-based differences
+- Visual anomalies
+
+The system is designed to help identify suspicious or counterfeit pharmaceutical packaging by comparing a suspect carton with a trusted reference image.
 
 ---
 
-## What this project does
+## Features
 
-The system:
+- OCR-based text extraction using PaddleOCR
+- Text comparison and mismatch detection
+- Typography analysis
+- Alignment and spacing verification
+- Crop-based visual comparison
+- OCR correction and normalization
+- Difference highlighting
+- Report generation
+- Reference image management
 
-1. Takes an uploaded carton image.
-2. Loads the original/authentic reference image.
-3. Runs OCR to extract printed text from both images.
-4. Compares text, line positions, spacing, alignment, and typography.
-5. Detects visual/crop-based differences.
-6. Highlights suspicious regions.
-7. Generates output images/reports showing detected issues.
+---
+
+## What This Project Does
+
+The system performs the following workflow:
+
+1. Accepts an uploaded carton image.
+2. Loads the authentic reference carton image.
+3. Extracts text from both images using OCR.
+4. Compares text content.
+5. Compares typography and spacing.
+6. Detects alignment issues.
+7. Detects crop-level visual differences.
+8. Highlights suspicious regions.
+9. Generates a visual verification report.
 
 ---
 
@@ -56,299 +81,400 @@ pharma_carton_auth_system/
 │   └── carton_auth.db
 │
 └── README.md
+```
 
-###Main Files Explained
+---
 
+# Main Modules
 
-##frontend/app.py
+## Frontend
 
-This is the user interface part of the project.
+### `frontend/app.py`
 
-It allows the user to:
+This is the user-facing application.
 
-Upload carton images.
-Select or compare against a reference image.
-Run the verification process.
-View detected differences.
-See output images and report results.
+Responsibilities:
 
-In simple words, this is the screen/app that the user interacts with.
+- Upload carton images
+- Select reference images
+- Trigger authentication
+- Display verification results
+- Display generated reports
 
-##backend/pipeline.py
+This is the entry point for users interacting with the system.
 
-This is the main processing pipeline.
+---
 
-It controls the full authentication flow:
+## Backend
 
-Loads the reference image.
-Loads the uploaded/suspect image.
-Runs OCR.
-Calls comparison modules.
-Collects all detected issues.
-Filters unwanted/false detections.
-Sends final result back to the frontend.
+### `backend/pipeline.py`
 
-This is the brain of the backend.
+This is the main processing pipeline and core controller of the application.
 
-##backend/remove.py
+Responsibilities:
 
-This file is used for image cleanup or preprocessing.
+- Load reference image
+- Load uploaded image
+- Run OCR
+- Execute comparison modules
+- Collect detected issues
+- Filter false positives
+- Generate final verification results
 
-Depending on the implementation, it may help remove unwanted background/noise or prepare the image before OCR/comparison.
+This file acts as the central orchestrator of the system.
 
-###OCR Files
+---
 
-##ocr/ocr_engine.py
+### `backend/remove.py`
 
-This file handles OCR.
+Handles image preprocessing and cleanup.
 
-OCR means Optical Character Recognition.
+Possible responsibilities:
 
-It reads text from carton images using OCR tools like PaddleOCR.
+- Noise reduction
+- Image enhancement
+- Background cleanup
+- Preprocessing before OCR
 
-It extracts:
+---
 
-Text
-Confidence score
-Bounding boxes
-Text position
-Text orientation
+# OCR Module
 
-This is important because most differences in medicine cartons are related to printed text.
+## `ocr/ocr_engine.py`
 
-##ocr/field_extractor.py
+Performs Optical Character Recognition (OCR).
 
-This file extracts important text fields from OCR results.
+Extracts:
 
-For example:
+- Text
+- Confidence scores
+- Bounding boxes
+- Text locations
+- Text orientation
 
-Medicine name
-Batch number
-MRP
-Manufacturing date
-Expiry date
-Manufacturer details
-License number
+Uses PaddleOCR to read printed information from pharmaceutical cartons.
 
-It helps convert raw OCR text into useful fields.
+---
 
-##ocr/crop_refiner.py
+## `ocr/field_extractor.py`
 
-This file improves cropped OCR regions.
-
-It helps when small or blurry text is not detected properly.
-
-It may crop specific text regions, rotate them if needed, and make them easier for OCR or comparison.
-
-###Comparison Files
-
-##comparison/text_compare.py
-
-This compares extracted text from the reference image and uploaded image.
-
-It checks things like:
-
-Missing text
-Extra text
-Wrong spelling
-Changed characters
-Different words
-OCR-based text mismatches
-
-Example:
-
-Reference: TABLET
-Uploaded: TABLETS
-
-This file detects that difference.
-
-##comparison/typography.py
-
-This checks visual text style differences.
-
-It compares things like:
-
-Font size
-Font thickness
-Boldness
-Spacing
-Text height
-Text width
-Alignment
-Color/contrast difference
-
-This is useful when the text is the same but the printing style is different.
-
-Example:
-
-Reference and fake both say "PARACETAMOL"
-but fake text is shifted, thinner, or spaced differently.
-comparison/line_compare.py
-
-This compares line-level alignment.
-
-It checks whether text lines are placed correctly.
-
-It helps detect:
-
-Text shifted up/down
-Text shifted left/right
-Different line spacing
-Misaligned printed blocks
-
-This is important because fake cartons may copy the same text but fail in exact placement.
-
-##comparison/anchor_match.py
-
-This file matches important fixed points between the reference and uploaded images.
-
-These fixed points are called anchors.
+Extracts important structured information from OCR results.
 
 Examples:
 
-Medicine name location
-Logo location
-Main text block location
-Important label position
+- Medicine name
+- Batch number
+- Manufacturing date
+- Expiry date
+- MRP
+- Manufacturer information
+- License details
 
-It helps align both images before comparing them.
+Converts raw OCR text into meaningful business data.
 
-##comparison/crop_match.py
+---
 
-This compares cropped regions of the reference and uploaded image.
+## `ocr/crop_refiner.py`
 
-Instead of comparing the whole image at once, it compares smaller important parts.
+Improves OCR performance on difficult text regions.
 
-This improves accuracy because small differences can be missed in full-image comparison.
+Functions include:
 
-It helps detect:
+- Region cropping
+- Region enhancement
+- Rotation correction
+- OCR refinement
 
-Printing differences
-Missing symbols
-Layout changes
-Region-level mismatches
-comparison/strict_ocr_matcher.py
+Useful for blurry or vertically printed text.
 
-This performs stricter OCR text matching.
+---
 
-It is useful when normal fuzzy matching is too lenient.
+# Comparison Module
 
-It helps reduce cases where wrong text is accepted just because it looks somewhat similar.
+## `comparison/text_compare.py`
 
-##comparison/dictionary_correction.py
+Compares text extracted from reference and suspect cartons.
 
-OCR sometimes reads text incorrectly.
+Detects:
 
-Example:
+- Missing text
+- Additional text
+- Spelling differences
+- Character substitutions
+- OCR mismatches
 
-0 instead of O
-1 instead of I
-5 instead of S
+### Example
 
-This file corrects common OCR mistakes before comparison.
+```text
+Reference : TABLET
+Uploaded  : TABLETS
+```
 
-It improves text comparison accuracy.
+---
 
-###Data Folder
+## `comparison/typography.py`
 
-##data/reference_images/
+Detects visual differences in printed text appearance.
 
-Stores original/authentic carton images.
+Compares:
 
-These images are used as the trusted reference for comparison.
+- Font size
+- Text thickness
+- Boldness
+- Character spacing
+- Width and height
+- Alignment
+- Contrast
 
-##data/uploads/
+Useful when text content is identical but print quality differs.
 
-Stores images uploaded by the user during testing.
+### Example
 
-These should usually not be pushed to GitHub.
+```text
+Reference : PARACETAMOL
+Uploaded  : PARACETAMOL
 
-##data/outputs/
+Text is identical,
+but spacing or thickness differs.
+```
 
-Stores generated results.
+---
 
-This may include:
+## `comparison/line_compare.py`
 
-Highlighted difference images
-Cropped issue images
-Report outputs
+Performs line-level layout comparison.
 
-These should usually not be pushed to GitHub.
+Detects:
 
-##data/reference_db.json
+- Horizontal shifts
+- Vertical shifts
+- Line spacing issues
+- Block misalignment
 
-Stores reference image details and metadata.
+Helps identify layout inconsistencies often found in counterfeit packaging.
 
-It may contain information about which product uses which reference image.
+---
 
-###Database
+## `comparison/anchor_match.py`
 
-##database/carton_auth.db
+Matches stable reference points between images.
 
-This is the local database file.
+Examples:
 
-It may store:
+- Medicine name
+- Logo location
+- Header regions
+- Key labels
 
-Uploaded image details
-Verification history
-Product information
-Result records
+These anchor points help align images before comparison.
 
-Usually, .db files should not be pushed unless needed for demo/sample data.
+---
 
-Files that should not be pushed to GitHub
+## `comparison/crop_match.py`
 
-The following files are generated automatically and should be ignored:
+Performs crop-based image comparison.
 
+Instead of comparing full images, important regions are compared individually.
+
+Detects:
+
+- Missing symbols
+- Layout changes
+- Print defects
+- Region-level differences
+
+Improves detection accuracy.
+
+---
+
+## `comparison/strict_ocr_matcher.py`
+
+Performs strict text matching.
+
+Purpose:
+
+- Reduce OCR matching errors
+- Prevent incorrect fuzzy matches
+- Improve comparison reliability
+
+---
+
+## `comparison/dictionary_correction.py`
+
+Corrects common OCR recognition mistakes.
+
+Examples:
+
+```text
+0 → O
+1 → I
+5 → S
+8 → B
+```
+
+Improves OCR accuracy before comparison.
+
+---
+
+# Data Storage
+
+## `data/reference_images/`
+
+Stores authentic carton images used as trusted references.
+
+---
+
+## `data/uploads/`
+
+Stores images uploaded during verification.
+
+These files are generated dynamically and should generally not be committed to GitHub.
+
+---
+
+## `data/outputs/`
+
+Stores generated outputs such as:
+
+- Difference images
+- Cropped issue images
+- Reports
+
+These files are generated dynamically and should generally not be committed to GitHub.
+
+---
+
+## `data/reference_db.json`
+
+Stores metadata about reference cartons.
+
+Examples:
+
+- Product names
+- Reference image mapping
+- Product configuration information
+
+---
+
+# Database
+
+## `database/carton_auth.db`
+
+Local SQLite database.
+
+May store:
+
+- Verification history
+- Product information
+- Uploaded image records
+- Authentication results
+
+---
+
+# Files Ignored by Git
+
+The following files should not normally be committed:
+
+```text
 __pycache__/
 *.pyc
-data/uploads/
-data/outputs/
-*.db
+
 .venv/
 
-These are ignored using .gitignore.
+data/uploads/
+data/outputs/
 
----How to run the project
+*.db
+```
 
-Activate virtual environment:
+These are managed through `.gitignore`.
 
+---
+
+# Installation
+
+## Create Virtual Environment
+
+```bash
+python -m venv .venv
+```
+
+## Activate Environment
+
+```bash
 .venv\Scripts\activate
+```
 
-Install dependencies:
+## Install Dependencies
 
+```bash
 pip install -r requirements.txt
+```
 
----Run the frontend/app:
+---
 
-###python frontend/app.py
+# Running the Project
 
-If the backend uses FastAPI, run:
+## Run Frontend
 
+```bash
+python frontend/app.py
+```
+
+## Run FastAPI Backend (if applicable)
+
+```bash
 uvicorn backend.main:app --reload
+```
 
-Use the correct command depending on your actual app structure.
+Use the appropriate startup command based on your application structure.
 
-Basic workflow
-Start the app.
-Upload suspect carton image.
-Select authentic reference image.
-Run comparison.
-View detected issues.
-Check highlighted image/report.
-Decide whether carton is authentic or suspicious.
-Important Note
+---
 
-This project does not guarantee 100% fake medicine detection.
+# Authentication Workflow
 
-It mainly detects visible packaging differences.
+1. Start the application.
+2. Upload suspect carton image.
+3. Load authentic reference image.
+4. Execute comparison process.
+5. Review detected differences.
+6. Examine highlighted regions.
+7. Generate verification report.
+8. Determine whether packaging is suspicious.
 
-Final verification should also include:
+---
 
-QR/barcode validation
-Batch number verification
-Manufacturer database check
-Chemical/lab testing
-Regulatory verification
+# Limitations
 
-This system is useful as a first-level visual authentication tool.
+This system performs packaging-level verification only.
+
+It does **not** guarantee counterfeit medicine detection.
+
+Additional validation methods may include:
+
+- QR code verification
+- Barcode verification
+- Manufacturer database verification
+- Batch verification
+- Regulatory validation
+- Laboratory testing
+
+---
+
+# Future Enhancements
+
+- Deep learning-based counterfeit detection
+- Logo verification module
+- Barcode validation
+- QR code validation
+- Multi-product reference database
+- Automated confidence scoring
+- Explainable AI reporting
+- Cloud deployment
+- Mobile application support
+
+---
+
+# Author
+
+Developed as a Pharmaceutical Carton Authentication and Verification System for detecting visual differences between authentic and suspect medicine packaging.
