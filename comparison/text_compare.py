@@ -5,6 +5,12 @@ from rapidfuzz import fuzz
 import re
 import string
 
+try:
+    from comparison.dictionary_correction import correct_word
+except Exception:
+    def correct_word(x):
+        return x
+
 
 @dataclass
 class TextIssue:
@@ -23,10 +29,87 @@ def normalize_text(text: str) -> str:
 
 
 def tokenize(text: str) -> List[str]:
-    return re.findall(r"[A-Za-z0-9]+(?:[-./][A-Za-z0-9]+)*|[^\w\s]", text or "")
+    return re.findall(
+        r"[A-Za-z0-9]+(?:[-./][A-Za-z0-9]+)*|[^\w\s]",
+        text or "",
+    )
+
+
+def box_size(bbox):
+    x1, y1, x2, y2 = bbox
+    return max(1, x2 - x1), max(1, y2 - y1)
+
+
+def is_vertical_bbox(bbox) -> bool:
+    x1, y1, x2, y2 = bbox
+    w = max(1, x2 - x1)
+    h = max(1, y2 - y1)
+    return h / w > 2.2
+
+
+def box_orientation(box: Dict) -> str:
+    if "is_vertical" in box:
+        return "vertical" if box.get("is_vertical") else "horizontal"
+
+    bbox = box.get("bbox")
+    if not bbox:
+        return "unknown"
+
+    return "vertical" if is_vertical_bbox(bbox) else "horizontal"
+
+
+def size_score(ref_bbox, sus_bbox):
+    rw, rh = box_size(ref_bbox)
+    sw, sh = box_size(sus_bbox)
+
+    width_ratio = min(rw, sw) / max(rw, sw)
+    height_ratio = min(rh, sh) / max(rh, sh)
+
+    return 100 * ((width_ratio + height_ratio) / 2)
+
+
+def line_similarity(a: str, b: str) -> int:
+    return max(
+        fuzz.ratio(a.lower(), b.lower()),
+        fuzz.token_sort_ratio(a.lower(), b.lower()),
+        fuzz.partial_ratio(a.lower(), b.lower()),
+    )
+
+
+def position_similarity(ref_bbox, sus_bbox):
+    rx1, ry1, rx2, ry2 = ref_bbox
+    sx1, sy1, sx2, sy2 = sus_bbox
+
+    rcx = (rx1 + rx2) / 2
+    rcy = (ry1 + ry2) / 2
+
+    scx = (sx1 + sx2) / 2
+    scy = (sy1 + sy2) / 2
+
+    dx = abs(rcx - scx)
+    dy = abs(rcy - scy)
+
+    dist = (dx * dx + dy * dy) ** 0.5
+
+    return max(0, 100 - dist / 5)
+
+
+def combined_match_score(ref_text, sus_text, ref_bbox, sus_bbox):
+    text_score = line_similarity(ref_text, sus_text)
+    pos_score = position_similarity(ref_bbox, sus_bbox)
+    size = size_score(ref_bbox, sus_bbox)
+
+    return (
+        text_score * 0.60
+        + pos_score * 0.25
+        + size * 0.15
+    )
 
 
 def classify_edit(ref: str, sus: str) -> str:
+    ref = correct_word(ref)
+    sus = correct_word(sus)
+
     ref = normalize_text(ref)
     sus = normalize_text(sus)
 
@@ -34,7 +117,7 @@ def classify_edit(ref: str, sus: str) -> str:
         return ""
 
     if ref.lower() == sus.lower() and ref != sus:
-        return "Capitalization change"
+        return f"Capitalization change: '{ref}' vs '{sus}'"
 
     if ref.replace(" ", "") == sus.replace(" ", ""):
         return "Spacing change"
@@ -70,16 +153,14 @@ def severity_for(ref: str, sus: str, field_name: str = "text") -> str:
         "tablet", "tablets", "capsule", "capsules",
         "mg", "ml", "mcg", "ip", "bp", "usp",
         "paracetamol", "cetirizine", "amoxicillin",
-        "batch", "mfg", "exp", "manufacturer",
-        "dosage", "composition", "barcode", "qr"
+        "pantoprazole", "domperidone",
+        "batch", "mfg", "mfd", "exp", "expiry",
+        "manufacturer", "dosage", "composition",
+        "barcode", "qr", "mrp",
     ]
 
     combined = f"{ref} {sus} {field_name}".lower()
-
-    if any(w in combined for w in sensitive_words):
-        return "High"
-
-    return "Medium" if ref != sus else "Low"
+    return "High" if any(w in combined for w in sensitive_words) else "Medium"
 
 
 def compare_strings(ref: str, sus: str, field_name: str = "text") -> TextIssue | None:
@@ -157,36 +238,56 @@ def compare_token_lists(ref_text: str, sus_text: str, field_name: str = "text") 
 
     return issues
 
+def match_ocr_boxes(
+    ref_boxes: List[Dict],
+    sus_boxes: List[Dict],
+    threshold: int = 65,
+) -> List[TextIssue]:
 
-def line_similarity(a: str, b: str) -> int:
-    return max(
-        fuzz.ratio(a.lower(), b.lower()),
-        fuzz.token_sort_ratio(a.lower(), b.lower()),
-        fuzz.partial_ratio(a.lower(), b.lower())
-    )
-
-
-def match_ocr_boxes(ref_boxes: List[Dict], sus_boxes: List[Dict], threshold: int = 55) -> List[TextIssue]:
     issues: List[TextIssue] = []
     used_sus = set()
 
     for rb in ref_boxes:
+
         ref_text = normalize_text(rb.get("text", ""))
-        if not ref_text or len(ref_text) < 2:
+        ref_bbox = rb.get("bbox")
+
+        if not ref_text or len(ref_text) < 2 or not ref_bbox:
             continue
 
         best_idx = None
         best_score = -1
 
         for i, sb in enumerate(sus_boxes):
+
             if i in used_sus:
                 continue
 
             sus_text = normalize_text(sb.get("text", ""))
-            if not sus_text or len(sus_text) < 2:
+            sus_bbox = sb.get("bbox")
+
+            if not sus_text or len(sus_text) < 2 or not sus_bbox:
                 continue
 
-            score = line_similarity(ref_text, sus_text)
+            # Vertical text only matches vertical text
+            if box_orientation(rb) != box_orientation(sb):
+                continue
+
+            rx1, ry1, rx2, ry2 = ref_bbox
+            sx1, sy1, sx2, sy2 = sus_bbox
+
+            ref_cx = (rx1 + rx2) / 2
+            sus_cx = (sx1 + sx2) / 2
+
+            if abs(ref_cx - sus_cx) > 1200:
+                continue
+
+            score = combined_match_score(
+                ref_text,
+                sus_text,
+                ref_bbox,
+                sus_bbox,
+            )
 
             if score > best_score:
                 best_score = score
@@ -199,7 +300,7 @@ def match_ocr_boxes(ref_boxes: List[Dict], sus_boxes: List[Dict], threshold: int
                 difference=f"Missing text '{ref_text}'",
                 severity="High",
                 confidence=95.0,
-                ref_bbox=rb.get("bbox"),
+                ref_bbox=ref_bbox,
                 suspect_bbox=None,
                 issue_type="missing_text",
             ))
@@ -217,8 +318,9 @@ def match_ocr_boxes(ref_boxes: List[Dict], sus_boxes: List[Dict], threshold: int
                 token_issues = [issue] if issue else []
 
             for issue in token_issues:
-                issue.ref_bbox = rb.get("bbox")
+                issue.ref_bbox = ref_bbox
                 issue.suspect_bbox = sb.get("bbox")
+                issue.confidence = round(min(95.0, max(70.0, best_score)), 2)
                 issues.append(issue)
 
     for i, sb in enumerate(sus_boxes):
@@ -226,7 +328,9 @@ def match_ocr_boxes(ref_boxes: List[Dict], sus_boxes: List[Dict], threshold: int
             continue
 
         sus_text = normalize_text(sb.get("text", ""))
-        if not sus_text or len(sus_text) < 2:
+        sus_bbox = sb.get("bbox")
+        
+        if not sus_text or len(sus_text) < 2 or not sus_bbox:
             continue
 
         issues.append(TextIssue(
@@ -236,7 +340,7 @@ def match_ocr_boxes(ref_boxes: List[Dict], sus_boxes: List[Dict], threshold: int
             severity="Medium",
             confidence=80.0,
             ref_bbox=None,
-            suspect_bbox=sb.get("bbox"),
+            suspect_bbox=sus_bbox,
             issue_type="extra_text",
         ))
 
@@ -244,46 +348,7 @@ def match_ocr_boxes(ref_boxes: List[Dict], sus_boxes: List[Dict], threshold: int
 
 
 def compare_full_text(ref_text: str, sus_text: str) -> List[TextIssue]:
-    issues: List[TextIssue] = []
-
-    ref_tokens = tokenize(ref_text)
-    sus_tokens = tokenize(sus_text)
-
-    used_sus = set()
-
-    for ref_word in ref_tokens:
-        if len(ref_word) < 2:
-            continue
-
-        best_idx = None
-        best_word = ""
-        best_score = 0
-
-        for i, sus_word in enumerate(sus_tokens):
-            if i in used_sus or len(sus_word) < 2:
-                continue
-
-            score = fuzz.ratio(ref_word.lower(), sus_word.lower())
-
-            if score > best_score:
-                best_score = score
-                best_word = sus_word
-                best_idx = i
-
-        if best_idx is not None and best_score >= 75:
-            used_sus.add(best_idx)
-
-            if ref_word != best_word:
-                issues.append(TextIssue(
-                    reference=ref_word,
-                    uploaded=best_word,
-                    difference=classify_edit(ref_word, best_word),
-                    severity=severity_for(ref_word, best_word),
-                    confidence=95.0,
-                    issue_type="spelling",
-                ))
-
-    return issues
+    return []
 
 
 def issues_to_dicts(issues):

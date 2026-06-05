@@ -1,7 +1,11 @@
 from pathlib import Path
 import json
 import streamlit as st
-
+import sys
+from pathlib import Path
+ROOT_DIR = Path(__file__).resolve().parents[1]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 from backend.pipeline import compare_cartons
 from utils.image_io import save_uploaded_file
 
@@ -328,7 +332,14 @@ if portal == "User Portal":
                         file_name="authentication_report.pdf",
                         mime="application/pdf",
                     )
-
+            st.metric(
+                "Result Accuracy / Authenticity Score",
+                f"{result['score']:.2f}%"
+            )
+            ref_conf = getattr(result["ref_ocr"], "avg_confidence", 0) * 100
+            sus_conf = getattr(result["sus_ocr"], "avg_confidence", 0) * 100
+            st.metric("Reference OCR Confidence", f"{ref_conf:.2f}%")
+            st.metric("Uploaded OCR Confidence", f"{sus_conf:.2f}%")
 
 elif portal == "Admin Portal":
     st.header("Admin Portal")

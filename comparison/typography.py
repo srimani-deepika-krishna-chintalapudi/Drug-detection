@@ -3,6 +3,7 @@ from dataclasses import dataclass, asdict
 from rapidfuzz import fuzz
 import cv2
 import numpy as np
+import re
 
 
 @dataclass
@@ -26,6 +27,35 @@ def safe_bbox(box):
     if not bbox or len(bbox) != 4:
         return None
     return [int(x) for x in bbox]
+
+
+def normalize_text(text):
+    text = str(text or "").lower()
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def word_count(text):
+    return len(normalize_text(text).split())
+
+
+def comparable_text(ref_text, sus_text):
+    ref_norm = normalize_text(ref_text)
+    sus_norm = normalize_text(sus_text)
+
+    if not ref_norm or not sus_norm:
+        return False
+
+    if word_count(ref_norm) != word_count(sus_norm):
+        return False
+
+    score = max(
+        fuzz.ratio(ref_norm, sus_norm),
+        fuzz.token_sort_ratio(ref_norm, sus_norm),
+    )
+
+    return score >= 88
 
 
 def crop(image, bbox, pad=4):
@@ -61,7 +91,7 @@ def normalize_crop(crop_img):
     gray = cv2.resize(
         gray,
         (new_w, target_h),
-        interpolation=cv2.INTER_CUBIC
+        interpolation=cv2.INTER_CUBIC,
     )
 
     th = cv2.adaptiveThreshold(
@@ -102,7 +132,6 @@ def ink_gap_profile(binary_img):
     if current_gap > 0:
         gaps.append(current_gap)
 
-    # Remove crop-edge blank gaps.
     internal_gaps = gaps[1:-1] if len(gaps) > 2 else []
 
     ink_cols = int(np.sum(has_ink))
@@ -121,7 +150,7 @@ def ink_gap_profile(binary_img):
     }
 
 
-def match_boxes(ref_boxes: List[Dict], sus_boxes: List[Dict], min_score=92):
+def match_boxes(ref_boxes: List[Dict], sus_boxes: List[Dict], min_score=88):
     matches = []
     used_sus = set()
 
@@ -145,10 +174,12 @@ def match_boxes(ref_boxes: List[Dict], sus_boxes: List[Dict], min_score=92):
             if not st or not sbbox:
                 continue
 
+            if not comparable_text(rt, st):
+                continue
+
             score = max(
-                fuzz.ratio(rt.lower(), st.lower()),
-                fuzz.partial_ratio(rt.lower(), st.lower()),
-                fuzz.token_sort_ratio(rt.lower(), st.lower()),
+                fuzz.ratio(normalize_text(rt), normalize_text(st)),
+                fuzz.token_sort_ratio(normalize_text(rt), normalize_text(st)),
             )
 
             if score > best_score:
@@ -165,6 +196,9 @@ def match_boxes(ref_boxes: List[Dict], sus_boxes: List[Dict], min_score=92):
 def compare_letter_spacing(ref_img, sus_img, ref_box, sus_box):
     ref_text = safe_text(ref_box)
     sus_text = safe_text(sus_box)
+
+    if not comparable_text(ref_text, sus_text):
+        return None
 
     ref_bbox = safe_bbox(ref_box)
     sus_bbox = safe_bbox(sus_box)
@@ -190,7 +224,6 @@ def compare_letter_spacing(ref_img, sus_img, ref_box, sus_box):
     ref_max = ref_profile["max_gap"]
     sus_max = sus_profile["max_gap"]
 
-    # Ignore very tiny gaps/noisy strokes.
     if max(ref_avg, sus_avg) < 3.0 and max(ref_max, sus_max) < 6.0:
         return None
 
@@ -200,7 +233,6 @@ def compare_letter_spacing(ref_img, sus_img, ref_box, sus_box):
     avg_ratio = avg_gap_diff / max(ref_avg, sus_avg, 1.0)
     max_ratio = max_gap_diff / max(ref_max, sus_max, 1.0)
 
-    # Conservative thresholds: only clearly visible letter-spacing changes.
     if avg_ratio > 0.45 or max_ratio > 0.50:
         direction = "closer/tighter" if sus_avg < ref_avg else "wider/more spaced"
 
@@ -230,11 +262,14 @@ def compare_typography(
 ) -> List[Dict]:
     issues = []
 
-    matches = match_boxes(ref_boxes, sus_boxes, min_score=92)
+    matches = match_boxes(ref_boxes, sus_boxes, min_score=88)
 
     for rb, sb, score in matches:
         ref_text = safe_text(rb)
         sus_text = safe_text(sb)
+
+        if not comparable_text(ref_text, sus_text):
+            continue
 
         ref_bbox = safe_bbox(rb)
         sus_bbox = safe_bbox(sb)
@@ -250,7 +285,6 @@ def compare_typography(
         height_change = abs(rh - sh) / max(rh, sh)
         width_change = abs(rw - sw) / max(rw, sw)
 
-        # Visible font size only.
         if height_change > 0.30 and abs(rh - sh) >= 10:
             issues.append(asdict(TypographyIssue(
                 reference=ref_text,
@@ -266,7 +300,6 @@ def compare_typography(
                 issue_type="font_size",
             )))
 
-        # Visible width / horizontal spacing only.
         if width_change > 0.35 and abs(rw - sw) >= 18:
             issues.append(asdict(TypographyIssue(
                 reference=ref_text,
@@ -287,7 +320,7 @@ def compare_typography(
                 ref_img,
                 sus_img,
                 rb,
-                sb
+                sb,
             )
             if spacing_issue:
                 issues.append(spacing_issue)
