@@ -21,6 +21,25 @@ class TypographyIssue:
 def safe_text(box):
     return str(box.get("text", "")).strip()
 
+def ink_density(crop_img):
+    if crop_img is None or crop_img.size == 0:
+        return 0.0
+
+    gray = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
+
+    th = cv2.adaptiveThreshold(
+        gray,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV,
+        31,
+        11,
+    )
+
+    ink = np.count_nonzero(th)
+    total = th.shape[0] * th.shape[1]
+
+    return ink / max(1, total)
 
 def safe_bbox(box):
     bbox = box.get("bbox")
@@ -281,6 +300,34 @@ def compare_typography(
         sh = max(1, sus_bbox[3] - sus_bbox[1])
         rw = max(1, ref_bbox[2] - ref_bbox[0])
         sw = max(1, sus_bbox[2] - sus_bbox[0])
+
+        if ref_img is not None and sus_img is not None:
+            ref_crop = crop(ref_img, ref_bbox)
+            sus_crop = crop(sus_img, sus_bbox)
+
+            ref_density = ink_density(ref_crop)
+            sus_density = ink_density(sus_crop)
+
+            density_change = abs(ref_density - sus_density)
+
+            if density_change > 0.08:
+                direction = "bolder/thicker" if sus_density > ref_density else "lighter/thinner"
+
+                issues.append(asdict(TypographyIssue(
+                    reference=ref_text,
+                    uploaded=sus_text,
+                    difference=(
+                        f"Visible print boldness/thickness difference. "
+                        f"Uploaded appears {direction}. "
+                        f"Reference ink density {ref_density:.3f}, "
+                        f"uploaded ink density {sus_density:.3f}."
+                    ),
+                    severity="Medium",
+                    confidence=86,
+                    ref_bbox=ref_bbox,
+                    suspect_bbox=sus_bbox,
+                    issue_type="boldness",
+                )))
 
         height_change = abs(rh - sh) / max(rh, sh)
         width_change = abs(rw - sw) / max(rw, sw)

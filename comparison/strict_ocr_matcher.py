@@ -239,7 +239,6 @@ def match_cost(a, b):
 
     return ((1 - sim) * 0.70) + (pos * 0.25) + (size * 0.05)
 
-
 def should_report_text_mismatch(a, b, sim):
     a_text = a.get("normalized_text", "")
     b_text = b.get("normalized_text", "")
@@ -247,14 +246,29 @@ def should_report_text_mismatch(a, b, sim):
     if not a_text or not b_text:
         return False
 
+    if a_text == b_text:
+        return False
+
+    # Always report number/code changes
+    if any(ch.isdigit() for ch in a_text + b_text):
+        return True
+
+    important_words = [
+        "village", "khurd", "bhatauli", "bhatouli",
+        "manufactured", "manufacturer", "india", "baddi",
+        "solan", "mumbai", "alkem", "abbott",
+        "contains", "dosage", "physician"
+    ]
+
+    combined = f"{a_text} {b_text}".lower()
+
+    if any(w in combined for w in important_words):
+        return True
+
     if a_text in b_text or b_text in a_text:
         return False
 
-    if not a["is_critical"] and not b["is_critical"]:
-        return sim < 0.50 and len(a_text) >= 6 and len(b_text) >= 6
-
-    return sim < 0.60
-
+    return sim < 0.72
 
 def strict_match_ocr(ref_boxes, sus_boxes, ref_shape, sus_shape):
     ref_lines = merge_boxes_to_lines(ref_boxes, ref_shape)

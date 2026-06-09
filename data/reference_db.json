@@ -9,6 +9,14 @@
     },
     "pand": {
         "medicine_name": "Pan-D",
-        "image_path": "C:\\Users\\07\\Downloads\\pharma_carton_auth_system\\data\\reference_images\\pand.jpg"
+        "image_path": "C:\\Users\\07\\Downloads\\pharma_carton_auth_system\\data\\reference_images\\pand.jpeg"
+    },
+    "vertin16": {
+        "medicine_name": "vertin 16",
+        "image_path": "C:\\Users\\07\\Downloads\\pharma_carton_auth_system\\data\\reference_images\\vertin16.jpeg"
+    },
+    "vertin8mg": {
+        "medicine_name": "vertin 8mg",
+        "image_path": "C:\\Users\\07\\Downloads\\pharma_carton_auth_system\\data\\reference_images\\vertin8mg.jpeg"
     }
 }

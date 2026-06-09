@@ -1,9 +1,15 @@
 from pathlib import Path
 import cv2
-from difflib import SequenceMatcher
-import re
 import numpy as np
-'''from comparison.line_compare import compare_ocr_lines'''
+from comparison.auto_label_regions import detect_auto_label_region_differences
+import re
+from comparison.space_visual import detect_space_differences
+from comparison.target_defects import detect_targeted_defects
+from comparison.local_print_defects import detect_local_print_defects
+from comparison.local_alignment import detect_local_alignment
+from comparison.punctuation_visual import detect_visual_punctuation
+from comparison.logo_visual import detect_logo_visual_differences
+
 from utils.config import OUTPUT_DIR
 from utils.image_io import read_bgr, write_image
 from backend.image_processing import (
@@ -16,7 +22,6 @@ from backend.image_processing import (
 from ocr.ocr_engine import PaddleOCREngine
 from ocr.field_extractor import extract_fields
 from comparison.strict_ocr_matcher import strict_match_ocr
-'''from comparison.text_compare import match_ocr_boxes, issues_to_dicts'''
 from comparison.typography import compare_typography
 from comparison.strip_quality import detect_strip_quality_issues
 from comparison.crop_match import detect_crop_based_differences
@@ -46,85 +51,10 @@ def _is_same_image(img1, img2):
     return float(np.mean(cv2.absdiff(img1, img2))) < 1.0
 
 
-def _clean_text_for_match(text):
-    text = str(text or "").lower()
-    text = re.sub(r"[^a-z0-9]+", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text
-
-
-def _text_similar(a, b):
-    a = _clean_text_for_match(a)
-    b = _clean_text_for_match(b)
-
-    if not a or not b:
-        return False
-
-    # reject one-letter OCR garbage like "T"
-    if len(a) < 3 or len(b) < 3:
-        return False
-
-    if a in b or b in a:
-        return True
-
-    return SequenceMatcher(None, a, b).ratio() >= 0.58
-
-
-def _norm_text(text):
-    text = str(text or "").lower()
-    text = text.replace("₹", "rs")
-    text = re.sub(r"[^a-z0-9]+", "", text)
-    return text.strip()
-
-
-def _same_or_related_text(ref, sus):
-    a = _norm_text(ref)
-    b = _norm_text(sus)
-
-    if not a or not b:
-        return False
-
-    if len(a) < 3 or len(b) < 3:
-        return False
-
-    if a == b:
-        return True
-
-    # EXP.JAN vs EXPJAN, MFG.FEB.2023 vs MFGFEB2023
-    if a in b or b in a:
-        shorter = min(len(a), len(b))
-        longer = max(len(a), len(b))
-
-        # allow only when smaller text is not too tiny
-        return shorter / max(1, longer) >= 0.65
-
-    return SequenceMatcher(None, a, b).ratio() >= 0.78
-
-
-def _is_critical_text(text):
-    t = _norm_text(text)
-
-    critical = [
-        "batch", "bno", "mfg", "mfd", "exp", "expiry",
-        "mrp", "mg", "ip", "pantoprazole", "domperidone",
-        "paracetamol", "gelatin", "capsule", "tablet"
-    ]
-
-    return any(x in t for x in critical)
-
-
 def _norm_for_visual(text):
-    import re
     text = str(text or "").lower()
     text = re.sub(r"[^a-z0-9]+", "", text)
     return text.strip()
-
-
-def _word_count(text):
-    import re
-    text = str(text or "").lower()
-    words = re.findall(r"[a-z0-9]+", text)
-    return len(words)
 
 
 def _same_text_only(ref_text, sus_text):
@@ -134,13 +64,14 @@ def _same_text_only(ref_text, sus_text):
     if not a or not b:
         return False
 
-    # Reject tiny OCR garbage like H, T, IP, to
     if len(a) < 4 or len(b) < 4:
         return False
 
-    # For visual checks, text must be exactly same.
-    # No partial matching allowed.
     return a == b
+
+
+def _same_base_text_ignore_punctuation(ref_text, sus_text):
+    return _norm_for_visual(ref_text) == _norm_for_visual(sus_text)
 
 
 def _filter_low_quality_issues(issues):
@@ -148,15 +79,25 @@ def _filter_low_quality_issues(issues):
 
     visual_issue_types = {
         "word_width_spacing",
-        "text_width_spacing",
-        "letter_spacing",
+        "text_width_spacing","space_difference",
+        "letter_spacing","auto_label_region_difference",
+        "code_mismatch",
+        "location_spelling_mismatch", "tag_value_mismatch", "location_spelling_mismatch","vertical_text_mismatch","vertical_text_alignment",
+        "colon_spacing",
         "crop_typography",
         "typography",
         "font_size",
         "font_style",
+        "colon_spacing",
         "alignment",
+        "local_print_defect",
         "position_mismatch",
         "size_mismatch",
+        "boldness",
+        "logo_layout",
+        "vertical_text_mismatch",
+        "local_alignment",
+        "vertical_text_alignment",
     }
 
     for issue in issues:
@@ -176,20 +117,46 @@ def _filter_low_quality_issues(issues):
         if confidence < 65:
             continue
 
-        # Kill bad visual comparisons:
-        # capsule contains vs T
-        # H vs withou
-        # IP vs Domperidone IP
-        # equivalent vs equivalent to Pantoprazole
-        # Registered Medical vs Registered
+        if issue_type == "punctuation":
+            if not _same_base_text_ignore_punctuation(ref_text, sus_text):
+                continue
+
+            issue["severity"] = "Medium"
+            issue["confidence"] = max(confidence, 85)
+            clean.append(issue)
+            continue
+        
+        if issue_type == "text_mismatch":
+            if not has_ref or not has_sus:
+                continue
+
+            ref_norm = _norm_for_visual(ref_text)
+            sus_norm = _norm_for_visual(sus_text)
+
+            if ref_norm == sus_norm:
+                continue
+
+            clean.append(issue)
+            continue
+        
         if issue_type in visual_issue_types:
             if not has_ref or not has_sus:
                 continue
 
-            if not _same_text_only(ref_text, sus_text):
-                continue
+            allow_different_text_types = {
+                "logo_layout",
+                "colon_spacing","auto_label_region_difference",
+                "vertical_text_mismatch",
+                "location_spelling_mismatch",
+                "code_mismatch","space_difference",
+                "tag_value_mismatch",
+                "vertical_text_alignment",
+            }
 
-        # Missing/extra text only if meaningful
+            if issue_type not in allow_different_text_types:
+                if not _same_text_only(ref_text, sus_text):
+                    continue
+
         if issue_type in ["missing_text", "extra_text"]:
             text = ref_text or sus_text
             norm = _norm_for_visual(text)
@@ -198,9 +165,11 @@ def _filter_low_quality_issues(issues):
                 continue
 
             important = [
-                "batch", "bno", "mfg", "mfd", "exp", "expiry",
-                "mrp", "pantoprazole", "domperidone",
-                "paracetamol", "tablet", "capsule", "mg"
+                "batch", "bno", "mfg", "mfd", "exp", "expiry", "mrp", "pantoprazole", "domperidone", "paracetamol", "tablet", "capsule", "mg",
+                "village", "bhatauli", "bhatouli", "khurd", "manufactured", "manufacturer", "india", "baddi",
+                "solan", "mumbai", "alkem", "abbott", "lic", "license", "regd", "reg", "no", 
+                "number", "village", "bhatauli", "bhatouli", "khurd", "manufactured", "manufacturer", "india", "baddi",
+                "solan", "mumbai", "alkem", "abbott", "contains", "dosage", "physician", "lic", "license"
             ]
 
             if not any(x in norm for x in important):
@@ -209,7 +178,8 @@ def _filter_low_quality_issues(issues):
         clean.append(issue)
 
     return clean
-        
+
+
 def _rotate_crop_if_vertical(crop, bbox):
     if crop is None or bbox is None:
         return crop
@@ -222,6 +192,7 @@ def _rotate_crop_if_vertical(crop, bbox):
         return cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)
 
     return crop
+
 
 def _dedupe_issues(issues):
     seen = set()
@@ -242,6 +213,7 @@ def _dedupe_issues(issues):
             unique.append(issue)
 
     return unique
+
 
 def _bbox_iou(a, b):
     if not a or not b:
@@ -277,13 +249,11 @@ def _merge_same_crop_issues(issues):
             ref_iou = _bbox_iou(ref_box, existing.get("ref_bbox"))
             sus_iou = _bbox_iou(sus_box, existing.get("suspect_bbox"))
 
-            same_area = ref_iou > 0.45 or sus_iou > 0.45
-
-            if same_area:
+            if ref_iou > 0.45 or sus_iou > 0.45:
                 existing_types = existing.get("issue_type", "")
                 new_type = issue.get("issue_type", "")
 
-                if new_type not in existing_types:
+                if new_type and new_type not in existing_types:
                     existing["issue_type"] = existing_types + " + " + new_type
 
                 old_diff = existing.get("difference", "")
@@ -291,18 +261,6 @@ def _merge_same_crop_issues(issues):
 
                 if new_diff and new_diff not in old_diff:
                     existing["difference"] = old_diff + " | " + new_diff
-
-                old_ref = existing.get("reference", "")
-                new_ref = issue.get("reference", "")
-
-                if new_ref and new_ref not in old_ref:
-                    existing["reference"] = old_ref or new_ref
-
-                old_uploaded = existing.get("uploaded", "")
-                new_uploaded = issue.get("uploaded", "")
-
-                if new_uploaded and new_uploaded not in old_uploaded:
-                    existing["uploaded"] = old_uploaded or new_uploaded
 
                 existing["confidence"] = max(
                     float(existing.get("confidence", 0) or 0),
@@ -319,6 +277,7 @@ def _merge_same_crop_issues(issues):
             merged.append(issue)
 
     return merged
+
 
 def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
     authentic_bgr_original = read_bgr(authentic_path)
@@ -403,67 +362,62 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
         verdict = verdict_from_score(score)
 
     else:
+        detectors = [
+            (
+                "Targeted Defects",
+                lambda: detect_targeted_defects(
+                    ref_ocr.boxes,
+                    sus_ocr.boxes,
+                    authentic_bgr,
+                    suspect_bgr,
+                ),
+            ),
+            (
+                "Space Difference",
+                lambda: detect_space_differences(
+                    ref_ocr.boxes,
+                    sus_ocr.boxes,
+                ),
+            ),
+            (
+                "Auto Label Region Comparison",
+                lambda: detect_auto_label_region_differences(
+                    ref_ocr.boxes,
+                    sus_ocr.boxes,
+                    authentic_bgr,
+                    suspect_bgr,
+                ),
+            ),
+            (
+                "Strict OCR comparison",
+                lambda: strict_match_ocr(
+                    ref_ocr.boxes,
+                    sus_ocr.boxes,
+                    authentic_bgr.shape,
+                    suspect_bgr.shape,
+                ),
+            ),
+        ]
 
-        '''try:
-            line_issues = compare_ocr_lines(
-                ref_ocr.boxes,
-                sus_ocr.boxes,
-                authentic_bgr.shape,
-                suspect_bgr.shape,
-            )
-            issues.extend(line_issues)
-        except Exception as e:
-            print("Line comparison failed:", e)'''
-            
-        try:
-            strict_issues = strict_match_ocr(
-                ref_ocr.boxes,
-                sus_ocr.boxes,
-                authentic_bgr.shape,
-                suspect_bgr.shape,
-            )
-            issues.extend(strict_issues)
-        except Exception as e:
-            print("Strict OCR positional comparison failed:", e)
+        for name, detector in detectors:
+            try:
+                found = detector()
+                if found is None:
+                    found = []
 
-        try:
-            crop_issues = detect_crop_based_differences(
-                authentic_bgr,
-                suspect_bgr,
-                ref_ocr.boxes,
-                sus_ocr.boxes,
-            )
-            issues.extend(crop_issues)
-        except Exception as e:
-            print("Crop-based comparison failed:", e)
+                print(f"{name}: {len(found)} issues")
+                issues.extend(found)
 
-        try:
-            strip_issues = detect_strip_quality_issues(
-                ref_ocr.boxes,
-                sus_ocr.boxes,
-                authentic_bgr,
-                suspect_bgr,
-            )
-            issues.extend(strip_issues)
-        except Exception as e:
-            print("Strip quality comparison failed:", e)
-
-        try:
-            typo_issues = compare_typography(
-                ref_ocr.boxes,
-                sus_ocr.boxes,
-                authentic_bgr,
-                suspect_bgr,
-            )
-            issues.extend(typo_issues)
-        except Exception as e:
-            print("Typography comparison failed:", e)
+            except Exception as e:
+                print(f"{name} failed:", e)
 
         issues = _filter_low_quality_issues(issues)
         issues = _dedupe_issues(issues)
         issues = _merge_same_crop_issues(issues)
+
         score = score_authenticity(issues)
         verdict = verdict_from_score(score)
+                
 
     evidence_pairs = {}
 
