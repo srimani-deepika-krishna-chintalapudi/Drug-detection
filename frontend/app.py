@@ -229,8 +229,7 @@ if portal == "User Portal":
 """)
 
         suspect_file = st.file_uploader(
-            "Upload carton image for verification",
-            type=["jpg", "jpeg", "png", "webp"],
+            "Upload carton image for verification (JPG, PNG, WEBP)",
             key="suspect_upload",
         )
 
@@ -249,6 +248,11 @@ if portal == "User Portal":
             st.error("Please upload carton image.")
             st.stop()
 
+        allowed_ext = {".jpg", ".jpeg", ".png", ".webp"}
+        if Path(suspect_file.name).suffix.lower() not in allowed_ext:
+            st.error("Unsupported file type. Please upload a JPG, PNG, or WEBP image.")
+            st.stop()
+
         suspect_path = save_uploaded_file(suspect_file, UPLOAD_DIR)
 
         st.success(f"Reference found: {ref_meta['medicine_name']}")
@@ -257,11 +261,11 @@ if portal == "User Portal":
 
         with col1:
             st.markdown("### Authentic Reference")
-            st.image(str(ref_path), width="stretch")
+            st.image(str(ref_path), use_column_width=True)
 
         with col2:
             st.markdown("### Uploaded Carton")
-            st.image(str(suspect_path), width="stretch")
+            st.image(str(suspect_path), use_column_width=True)
 
         with st.spinner("Analyzing carton. Running OCR, visual checks and report generation..."):
             result = compare_cartons(
@@ -295,17 +299,17 @@ if portal == "User Portal":
 
             with c1:
                 st.markdown("### Authentic Reference")
-                st.image(str(ref_path), width="stretch")
+                st.image(str(ref_path), use_column_width=True)
 
                 st.markdown("### Authentic OCR Overlay")
-                st.image(result["paths"]["authentic_ocr_overlay"], width="stretch")
+                st.image(result["paths"]["authentic_ocr_overlay"], use_column_width=True)
 
             with c2:
                 st.markdown("### Uploaded Carton")
-                st.image(str(suspect_path), width="stretch")
+                st.image(str(suspect_path), use_column_width=True)
 
                 st.markdown("### Uploaded OCR Overlay")
-                st.image(result["paths"]["suspect_ocr_overlay"], width="stretch")
+                st.image(result["paths"]["suspect_ocr_overlay"], use_column_width=True)
 
         with tab2:
             st.markdown("### Extracted OCR Fields")
@@ -369,7 +373,7 @@ if portal == "User Portal":
                                 st.image(
                                     pair["ref"],
                                     caption="Reference Evidence",
-                                    width="stretch",
+                                    use_column_width=True,
                                 )
                             else:
                                 st.info("No reference crop available.")
@@ -379,7 +383,7 @@ if portal == "User Portal":
                                 st.image(
                                     pair["sus"],
                                     caption="Uploaded Evidence",
-                                    width="stretch",
+                                    use_column_width=True,
                                 )
                             else:
                                 st.info("No uploaded crop available.")
@@ -454,8 +458,7 @@ elif portal == "Admin Portal":
         )
 
         reference_file = st.file_uploader(
-            "Upload authentic reference carton",
-            type=["jpg", "jpeg", "png", "webp"],
+            "Upload authentic reference carton (JPG, PNG, WEBP)",
             key="reference_upload",
         )
 
@@ -470,10 +473,15 @@ elif portal == "Admin Portal":
                 st.error("Please upload reference image.")
                 st.stop()
 
+            allowed_ext = {".jpg", ".jpeg", ".png", ".webp"}
+            if Path(reference_file.name).suffix.lower() not in allowed_ext:
+                st.error("Unsupported file type. Please upload a JPG, PNG, or WEBP image.")
+                st.stop()
+
             ref_path = save_reference_image(medicine_name_clean, reference_file)
 
             st.success(f"Reference image saved for {medicine_name_clean}")
-            st.image(str(ref_path), caption="Saved Reference", width="stretch")
+            st.image(str(ref_path), caption="Saved Reference", use_column_width=True)
 
             st.rerun()
 

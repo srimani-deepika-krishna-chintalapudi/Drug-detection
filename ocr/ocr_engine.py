@@ -2,10 +2,11 @@ from dataclasses import dataclass
 from typing import List, Dict, Optional, Tuple
 import hashlib
 import re
+from pathlib import Path
 
 import cv2
 import numpy as np
-from paddleocr import PaddleOCR
+import easyocr
 
 
 @dataclass
@@ -255,25 +256,64 @@ def make_full_text(boxes, image_shape=None):
     return "\n".join(output).strip()
 
 
+# ---------------------------------------------------------------------------
+# OCR Engine — backed by EasyOCR (downloads models from GitHub, not Baidu)
+# The class is named PaddleOCREngine for backward compatibility with pipeline.py
+# ---------------------------------------------------------------------------
+
 class PaddleOCREngine:
-    def __init__(self, run_enhanced_variant=True, enable_vertical_retry=True):
-        self.ocr = PaddleOCR(
-            lang="en",
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
+    """
+    OCR engine that uses EasyOCR under the hood.
+    Kept as 'PaddleOCREngine' so pipeline.py needs zero changes.
+    EasyOCR downloads its models from GitHub releases (accessible globally),
+    unlike PaddleOCR which requires Baidu servers.
+    """
+
+    def __init__(
+        self,
+        run_enhanced_variant=True,
+        enable_vertical_retry=True,
+        use_gpu=None,
+        use_tensorrt=False,
+    ):
+        if use_gpu is None:
+            try:
+                import torch
+                use_gpu = torch.cuda.is_available()
+            except Exception:
+                use_gpu = False
+
+        print(f"[OCR] Initialising EasyOCR (gpu={use_gpu}) ...")
+        # EasyOCR downloads craft_mlt_25k.pth + english_g2.pth from GitHub on first run
+        self.reader = easyocr.Reader(
+            ["en"],
+            gpu=use_gpu,
+            verbose=False,
         )
+        print("[OCR] EasyOCR ready.")
+
         self.run_enhanced_variant = run_enhanced_variant
         self.enable_vertical_retry = enable_vertical_retry
-        self._single_cache = {}
-        self._final_cache = {}
+        self._single_cache: Dict = {}
+        self._final_cache: Dict = {}
 
-    def _extract_page_items(self, page):
-        """Supports PaddleOCR dict-style output."""
-        texts = page.get("rec_texts", []) if isinstance(page, dict) else []
-        scores = page.get("rec_scores", []) if isinstance(page, dict) else []
-        polys = page.get("rec_polys", []) if isinstance(page, dict) else []
-        return texts, scores, polys
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _run_easyocr(self, image: np.ndarray):
+        """
+        Run EasyOCR on a BGR or RGB image.
+        Returns list of (bbox_pts, text, confidence).
+        bbox_pts format: [[x1,y1],[x2,y1],[x2,y2],[x1,y2]]
+        """
+        # EasyOCR works with RGB; convert from BGR
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        try:
+            return self.reader.readtext(rgb, detail=1, paragraph=False)
+        except Exception as e:
+            print(f"[OCR] EasyOCR readtext failed: {e}")
+            return []
 
     def _vertical_retry(self, processed_image, raw_bbox, current_text, current_conf):
         if not self.enable_vertical_retry:
@@ -285,78 +325,69 @@ class PaddleOCREngine:
                 return current_text, current_conf
 
             rotated = rotate_for_vertical_ocr(crop)
-            v_raw = self.ocr.predict(rotated)
+            rgb = cv2.cvtColor(rotated, cv2.COLOR_BGR2RGB)
+            v_raw = self.reader.readtext(rgb, detail=1, paragraph=False)
 
             best_text = current_text
             best_conf = float(current_conf)
 
-            if v_raw:
-                for v_page in v_raw:
-                    v_texts, v_scores, _ = self._extract_page_items(v_page)
-                    for vt, vc in zip(v_texts, v_scores):
-                        vt = apply_ocr_corrections(vt)
-                        vc = float(vc)
-                        if vt and vc > best_conf:
-                            best_text = vt
-                            best_conf = vc
+            for (_, vt, vc) in v_raw:
+                vt = apply_ocr_corrections(vt)
+                vc = float(vc)
+                if vt and vc > best_conf:
+                    best_text = vt
+                    best_conf = vc
 
             return best_text, best_conf
 
         except Exception as e:
-            print("Vertical OCR retry failed:", e)
+            print(f"[OCR] Vertical retry failed: {e}")
             return current_text, current_conf
 
-    def _run_single(self, image, source, original_shape) -> OCRResult:
-        # Cache each exact OCR variant. This prevents duplicate PaddleOCR calls and duplicate logs.
+    def _run_single(self, image: np.ndarray, source: str, original_shape) -> OCRResult:
         cache_key = f"{source}:{image_hash(image)}:{original_shape}"
         if cache_key in self._single_cache:
             return self._single_cache[cache_key]
 
-        raw = self.ocr.predict(image)
+        raw = self._run_easyocr(image)
         boxes = []
 
-        if raw:
-            for page in raw:
-                texts, scores, polys = self._extract_page_items(page)
+        for (bbox_pts, text, conf) in raw:
+            text = apply_ocr_corrections(text)
+            if not text:
+                continue
 
-                # IMPORTANT: this loop must be INSIDE the page loop.
-                # Your previous code had this indentation wrong.
-                for text, conf, poly in zip(texts, scores, polys):
-                    text = apply_ocr_corrections(text)
-                    if not text:
-                        continue
+            # EasyOCR returns [[x1,y1],[x2,y1],[x2,y2],[x1,y2]]
+            poly_list = [list(map(int, p)) for p in bbox_pts]
+            raw_bbox = bbox_from_poly(poly_list)
+            bbox = scale_box_back(raw_bbox, original_shape, image.shape)
 
-                    poly_list = poly.tolist() if hasattr(poly, "tolist") else poly
-                    raw_bbox = bbox_from_poly(poly_list)
-                    bbox = scale_box_back(raw_bbox, original_shape, image.shape)
+            orientation = detect_orientation(bbox)
+            is_vertical = orientation == "vertical"
 
-                    orientation = detect_orientation(bbox)
-                    is_vertical = orientation == "vertical"
+            if is_vertical:
+                text, conf = self._vertical_retry(image, raw_bbox, text, float(conf))
 
-                    if is_vertical:
-                        text, conf = self._vertical_retry(image, raw_bbox, text, float(conf))
+            bw, bh = box_size(bbox)
+            cx, cy = box_center(bbox)
+            oh, ow = original_shape[:2]
+            norm_text = normalize_text(text)
 
-                    bw, bh = box_size(bbox)
-                    cx, cy = box_center(bbox)
-                    oh, ow = original_shape[:2]
-
-                    norm_text = normalize_text(text)
-
-                    boxes.append({
-                        "text": text,
-                        "normalized_text": norm_text,
-                        "confidence": float(conf),
-                        "bbox": bbox,
-                        "poly": poly_list,
-                        "is_vertical": is_vertical,
-                        "orientation": orientation,
-                        "zone": assign_zone(bbox, original_shape),
-                        "center": [cx, cy],
-                        "norm_center": [cx / max(1, ow), cy / max(1, oh)],
-                        "size": [bw, bh],
-                        "norm_size": [bw / max(1, ow), bh / max(1, oh)],
-                        "is_critical": any(k in norm_text for k in CRITICAL_KEYWORDS),
-                    })
+            boxes.append({
+                "text": text,
+                "normalized_text": norm_text,
+                "confidence": float(conf),
+                "bbox": bbox,
+                "poly": poly_list,
+                "is_vertical": is_vertical,
+                "orientation": orientation,
+                "zone": assign_zone(bbox, original_shape),
+                "center": [cx, cy],
+                "norm_center": [cx / max(1, ow), cy / max(1, oh)],
+                "size": [bw, bh],
+                "norm_size": [bw / max(1, ow), bh / max(1, oh)],
+                "is_critical": any(k in norm_text for k in CRITICAL_KEYWORDS),
+            })
 
         full_text = make_full_text(boxes, original_shape)
         avg = sum(b.get("confidence", 0.0) for b in boxes) / max(1, len(boxes))
@@ -370,27 +401,34 @@ class PaddleOCREngine:
         self._single_cache[cache_key] = result
         return result
 
-    def run(self, image_bgr, source="image") -> OCRResult:
+    # ------------------------------------------------------------------
+    # Public API (identical to original PaddleOCREngine)
+    # ------------------------------------------------------------------
+
+    def run(self, image_bgr: np.ndarray, source: str = "image") -> OCRResult:
         if image_bgr is None:
             return OCRResult(source=source, boxes=[], full_text="", avg_confidence=0.0)
 
         original_shape = image_bgr.shape
-        final_key = f"{source}:{image_hash(image_bgr)}:{original_shape}:enh={self.run_enhanced_variant}"
+        final_key = (
+            f"{source}:{image_hash(image_bgr)}:{original_shape}"
+            f":enh={self.run_enhanced_variant}"
+        )
 
         if final_key in self._final_cache:
             return self._final_cache[final_key]
 
-        variants: List[Tuple[str, np.ndarray]] = [("original_resized", resize_for_ocr(image_bgr))]
+        variants: List[Tuple[str, np.ndarray]] = [
+            ("original_resized", resize_for_ocr(image_bgr))
+        ]
 
         if self.run_enhanced_variant:
             enhanced = prepare_for_ocr(image_bgr)
-
-            # If enhancement accidentally produces the exact same image, don't OCR it again.
             if image_hash(enhanced) != image_hash(variants[0][1]):
                 variants.append(("enhanced_color", enhanced))
 
         results = []
-        seen_variant_hashes = set()
+        seen_variant_hashes: set = set()
 
         for name, img in variants:
             hsh = image_hash(img)
@@ -402,12 +440,12 @@ class PaddleOCREngine:
                 result = self._run_single(img, f"{source}_{name}", original_shape)
                 results.append(result)
                 print(
-                    f"OCR Paddle {source}_{name}: "
+                    f"[OCR] EasyOCR {source}_{name}: "
                     f"avg_conf={result.avg_confidence:.3f}, "
                     f"chars={len(result.full_text)}"
                 )
             except Exception as e:
-                print(f"OCR Paddle failed {source}_{name}: {e}")
+                print(f"[OCR] EasyOCR failed {source}_{name}: {e}")
 
         if not results:
             final = OCRResult(source=source, boxes=[], full_text="", avg_confidence=0.0)
