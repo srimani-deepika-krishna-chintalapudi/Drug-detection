@@ -1,35 +1,22 @@
 {
-    "dolo650": {
-        "medicine_name": "dolo 650",
-        "image_path": "C:\\Users\\07\\Downloads\\pharma_carton_auth_system\\data\\reference_images\\dolo650.jpg"
-    },
-    "cetrizine": {
-        "medicine_name": "cetrizine",
-        "image_path": "C:\\Users\\07\\Downloads\\pharma_carton_auth_system\\data\\reference_images\\cetrizine.jpg"
-    },
-    "pand": {
-<<<<<<< HEAD
-        "medicine_name": "pan d",
-        "image_path": "C:\\Users\\Admin\\Downloads\\Drug-detection-main\\data\\reference_images\\pand.jpeg"
-    },
-    "vertin16": {
-        "medicine_name": "vertin 16",
-        "image_path": "C:\\Users\\Admin\\Downloads\\Drug-detection-main\\data\\reference_images\\vertin16.jpeg"
-    },
-    "vertin8mg": {
-        "medicine_name": "vertin 8mg",
-        "image_path": "C:\\Users\\Admin\\Downloads\\Drug-detection-main\\data\\reference_images\\vertin8mg.jpeg"
-=======
-        "medicine_name": "Pan-D",
-        "image_path": "C:\\Users\\07\\Downloads\\pharma_carton_auth_system\\data\\reference_images\\pand.jpeg"
-    },
-    "vertin16": {
-        "medicine_name": "vertin 16",
-        "image_path": "C:\\Users\\07\\Downloads\\pharma_carton_auth_system\\data\\reference_images\\vertin16.jpeg"
-    },
-    "vertin8mg": {
-        "medicine_name": "vertin 8mg",
-        "image_path": "C:\\Users\\07\\Downloads\\pharma_carton_auth_system\\data\\reference_images\\vertin8mg.jpeg"
->>>>>>> 5bdd73b2aa6ed40ba54867b1a80b3147335b8caa
-    }
+  "dolo650": {
+    "medicine_name": "dolo 650",
+    "image_path": "data/reference_images/dolo650.jpg"
+  },
+  "cetrizine": {
+    "medicine_name": "cetrizine",
+    "image_path": "data/reference_images/cetrizine.jpg"
+  },
+  "pand": {
+    "medicine_name": "pan d",
+    "image_path": "data/reference_images/pand.jpeg"
+  },
+  "vertin16": {
+    "medicine_name": "vertin 16",
+    "image_path": "data/reference_images/vertin16.jpeg"
+  },
+  "vertin8mg": {
+    "medicine_name": "vertin 8mg",
+    "image_path": "data/reference_images/vertin8mg.jpeg"
+  }
 }
