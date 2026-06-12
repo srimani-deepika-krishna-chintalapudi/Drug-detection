@@ -368,7 +368,6 @@ class PaddleOCREngine:
             bw, bh = box_size(bbox)
             cx, cy = box_center(bbox)
             oh, ow = original_shape[:2]
-
             norm_text = normalize_text(text)
 
             boxes.append({
@@ -426,7 +425,6 @@ class PaddleOCREngine:
             hsh = image_hash(img)
             if hsh in seen_variant_hashes:
                 continue
-
             seen_variant_hashes.add(hsh)
 
             try:
