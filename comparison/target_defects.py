@@ -12,7 +12,7 @@ def sim(a, b):
     a = clean(a)
     b = clean(b)
 
-    if not a or not not b:
+    if not a or not b:
         return 0.0
 
     if a == b:
@@ -272,7 +272,7 @@ def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
             })
 
     # 2. Bhatauli/Bhatouli spelling only
-    for r in ref_lines:
+    '''for r in ref_lines:
         r_clean = clean(r["text"])
 
         if "bhatauli" not in r_clean and "bhatouli" not in r_clean:
@@ -307,7 +307,7 @@ def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
             "ref_bbox": r["bbox"],
             "suspect_bbox": s["bbox"],
         })
-
+'''
     # 3. Visible spacing before colon using raw OCR boxes
     colon_keywords = [
         "contains",

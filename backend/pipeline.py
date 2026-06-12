@@ -2,6 +2,7 @@ from pathlib import Path
 import cv2
 from comparison.vertical_text_compare import detect_vertical_text_differences
 import numpy as npS
+from comparison.line_spacing import detect_line_spacing_differences
 from comparison.auto_label_regions import detect_auto_label_region_differences
 import re
 from comparison.spacing_compare import detect_spacing_differences
@@ -414,6 +415,15 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
                     sus_ocr.boxes,
                     authentic_bgr.shape,
                     suspect_bgr.shape,
+                ),
+            ),
+            (
+                "Letter Spacing",
+                lambda: compare_letter_spacing(
+                    ref_ocr.boxes,
+                    sus_ocr.boxes,
+                    authentic_bgr,
+                    suspect_bgr,
                 ),
             ),
         ]
