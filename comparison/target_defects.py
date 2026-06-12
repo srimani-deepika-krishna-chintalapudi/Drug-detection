@@ -309,7 +309,7 @@ def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
         })
 '''
     # 3. Visible spacing before colon using raw OCR boxes
-    colon_keywords = [
+    '''colon_keywords = [
         "contains",
         "dosage",
         "manufactured",
@@ -382,7 +382,7 @@ def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
                 "confidence": 88,
                 "ref_bbox": rb["bbox"],
                 "suspect_bbox": best["bbox"],
-            })
+            })'''
 
     # 4. Vertical text/code mismatch
     ref_v = [

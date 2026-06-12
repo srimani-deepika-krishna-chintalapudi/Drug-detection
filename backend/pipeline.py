@@ -399,15 +399,15 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
                     suspect_bgr,
                 ),
             ),
-            (
-                "Strict OCR comparison",
-                lambda: strict_match_ocr(
-                    ref_ocr.boxes,
-                    sus_ocr.boxes,
-                    authentic_bgr.shape,
-                    suspect_bgr.shape,
-                ),
-            ),
+            #(
+             #   "Strict OCR comparison",
+              #  lambda: strict_match_ocr(
+               #     ref_ocr.boxes,
+                #    sus_ocr.boxes,
+                 #   authentic_bgr.shape,
+                  #  suspect_bgr.shape,
+                #),
+            #),
             (
                 "Generic Vertical Text Comparison",
                 lambda: detect_vertical_text_differences(
