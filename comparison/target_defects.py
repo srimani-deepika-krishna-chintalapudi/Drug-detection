@@ -12,7 +12,7 @@ def sim(a, b):
     a = clean(a)
     b = clean(b)
 
-    if not a or not b:
+    if not a or not not b:
         return 0.0
 
     if a == b:
@@ -231,48 +231,106 @@ def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
 
     ref_lines = group_lines(ref_boxes)
     sus_lines = group_lines(sus_boxes)
+        # Generic right-side Batch/MFG/EXP/MRP vertical strip fallback
+    if ref_img is not None and sus_img is not None:
+        rh, rw = ref_img.shape[:2]
+        sh, sw = sus_img.shape[:2]
 
-    # 1. Entire Batch/MFG/EXP/MRP block as ONE issue
-    tag_words = ["bno", "batch", "mfg", "mfd", "exp", "expiry", "mrp", "rs"]
+        ref_bbox = [
+            int(rw * 0.72),
+            int(rh * 0.02),
+            int(rw * 0.98),
+            int(rh * 0.98),
+        ]
 
-    ref_tag_lines = [
-        l for l in ref_lines
-        if any(w in clean(l["text"]) for w in tag_words)
+        sus_bbox = [
+            int(sw * 0.72),
+            int(sh * 0.02),
+            int(sw * 0.98),
+            int(sh * 0.98),
+        ]
+
+        issues.append({
+            "issue_type": "tag_region_mismatch",
+            "reference": "Batch/MFG/EXP/MRP region",
+            "uploaded": "Batch/MFG/EXP/MRP region",
+            "difference": "Batch/MFG/EXP/MRP printed region requires visual comparison.",
+            "severity": "High",
+            "confidence": 90,
+            "ref_bbox": ref_bbox,
+            "suspect_bbox": sus_bbox,
+        })
+
+        # 1. Generic Batch/MFG/EXP/MRP region comparison
+    tag_words = [
+        "batch", "bno", "bno", "mfg", "mfd",
+        "exp", "expiry", "mrp", "rs"
     ]
+    print("NEW TARGET DEFECTS CODE RUNNING...")
 
-    sus_tag_lines = [
-        l for l in sus_lines
-        if any(w in clean(l["text"]) for w in tag_words)
-    ]
+    def is_tag_box(box):
+        text = clean(box.get("text", ""))
+        return box.get("bbox") and any(t in text for t in tag_words)
 
-    if ref_tag_lines and sus_tag_lines:
-        ref_text = "\n".join(l["text"] for l in ref_tag_lines)
-        sus_text = "\n".join(l["text"] for l in sus_tag_lines)
+    def build_tag_region(boxes, img):
+        if img is None:
+            return None, ""
 
-        if clean(ref_text) != clean(sus_text):
+        h, w = img.shape[:2]
+
+        tag_boxes = [b for b in boxes if is_tag_box(b)]
+
+        if not tag_boxes:
+            return None, ""
+
+        # expand region around detected tag boxes
+        x1 = min(b["bbox"][0] for b in tag_boxes)
+        y1 = min(b["bbox"][1] for b in tag_boxes)
+        x2 = max(b["bbox"][2] for b in tag_boxes)
+        y2 = max(b["bbox"][3] for b in tag_boxes)
+
+        pad_x = int(w * 0.03)
+        pad_y = int(h * 0.04)
+
+        x1 = max(0, x1 - pad_x)
+        y1 = max(0, y1 - pad_y)
+        x2 = min(w, x2 + pad_x)
+        y2 = min(h, y2 + pad_y)
+
+        # prevent full-carton crop
+        if (x2 - x1) > w * 0.65:
+            cx = (x1 + x2) // 2
+            half = int(w * 0.30)
+            x1 = max(0, cx - half)
+            x2 = min(w, cx + half)
+
+        if (y2 - y1) > h * 0.45:
+            cy = (y1 + y2) // 2
+            half = int(h * 0.22)
+            y1 = max(0, cy - half)
+            y2 = min(h, cy + half)
+
+        region_text = " ".join(str(b.get("text", "")) for b in tag_boxes)
+
+        return [x1, y1, x2, y2], region_text
+
+    ref_tag_bbox, ref_tag_text = build_tag_region(ref_boxes, ref_img)
+    sus_tag_bbox, sus_tag_text = build_tag_region(sus_boxes, sus_img)
+
+    if ref_tag_bbox and sus_tag_bbox:
+        if clean(ref_tag_text) != clean(sus_tag_text):
             issues.append({
-                "issue_type": "tag_value_mismatch",
-                "reference": ref_text,
-                "uploaded": sus_text,
-                "difference": "Batch/MFG/EXP/MRP printed tag block differs.",
+                "issue_type": "tag_region_mismatch",
+                "reference": ref_tag_text,
+                "uploaded": sus_tag_text,
+                "difference": "Batch/MFG/EXP/MRP printed region differs.",
                 "severity": "High",
-                "confidence": 95,
-                "ref_bbox": [
-                    min(l["bbox"][0] for l in ref_tag_lines),
-                    min(l["bbox"][1] for l in ref_tag_lines),
-                    max(l["bbox"][2] for l in ref_tag_lines),
-                    max(l["bbox"][3] for l in ref_tag_lines),
-                ],
-                "suspect_bbox": [
-                    min(l["bbox"][0] for l in sus_tag_lines),
-                    min(l["bbox"][1] for l in sus_tag_lines),
-                    max(l["bbox"][2] for l in sus_tag_lines),
-                    max(l["bbox"][3] for l in sus_tag_lines),
-                ],
+                "confidence": 92,
+                "ref_bbox": ref_tag_bbox,
+                "suspect_bbox": sus_tag_bbox,
             })
-
     # 2. Bhatauli/Bhatouli spelling only
-    '''for r in ref_lines:
+    for r in ref_lines:
         r_clean = clean(r["text"])
 
         if "bhatauli" not in r_clean and "bhatouli" not in r_clean:
@@ -307,9 +365,9 @@ def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
             "ref_bbox": r["bbox"],
             "suspect_bbox": s["bbox"],
         })
-'''
+
     # 3. Visible spacing before colon using raw OCR boxes
-    '''colon_keywords = [
+    colon_keywords = [
         "contains",
         "dosage",
         "manufactured",
@@ -372,7 +430,7 @@ def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
         if ref_gap is None or sus_gap is None:
             continue
 
-        if abs(ref_gap - sus_gap) >= 0.25:
+        if abs(ref_gap - sus_gap) >= 0.12:
             issues.append({
                 "issue_type": "colon_spacing",
                 "reference": f"{rt} (space={ref_gap:.2f})",
@@ -382,7 +440,7 @@ def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
                 "confidence": 88,
                 "ref_bbox": rb["bbox"],
                 "suspect_bbox": best["bbox"],
-            })'''
+            })
 
     # 4. Vertical text/code mismatch
     ref_v = [

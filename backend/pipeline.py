@@ -1,8 +1,9 @@
 from pathlib import Path
 import cv2
+from comparison.carton_spacing import detect_carton_spacing_issues
+from comparison.character_analysis.char_spacing import compare_character_spacing
 from comparison.vertical_text_compare import detect_vertical_text_differences
-import numpy as npS
-from comparison.line_spacing import detect_line_spacing_differences
+import numpy as np
 from comparison.auto_label_regions import detect_auto_label_region_differences
 import re
 from comparison.spacing_compare import detect_spacing_differences
@@ -79,7 +80,7 @@ def _same_base_text_ignore_punctuation(ref_text, sus_text):
 
 def _filter_low_quality_issues(issues):
     clean = []
-
+    
     visual_issue_types = {
         "word_width_spacing",
         "text_width_spacing","space_difference",
@@ -105,6 +106,14 @@ def _filter_low_quality_issues(issues):
     for issue in issues:
         issue_type = issue.get("issue_type", "")
         confidence = float(issue.get("confidence", 0) or 0)
+        if issue_type in ["character_spacing","letter_spacing_change","word_width_spacing"]:
+            issue.setdefault("ref_bbox", issue.get("bbox") or issue.get("reference_bbox"))
+            issue.setdefault("suspect_bbox", issue.get("bbox") or issue.get("uploaded_bbox"))
+
+            if issue.get("ref_bbox") and issue.get("suspect_bbox"):
+                clean.append(issue)
+
+            continue
 
         ref_text = str(issue.get("reference", "") or "").strip()
         sus_text = str(issue.get("uploaded", "") or "").strip()
@@ -190,11 +199,10 @@ def _rotate_crop_if_vertical(crop, bbox):
     w = max(1, x2 - x1)
     h = max(1, y2 - y1)
 
-    if h / w > 2.0:
+    if h > w * 1.2:
         return cv2.rotate(crop, cv2.ROTATE_90_CLOCKWISE)
 
     return crop
-
 
 def _dedupe_issues(issues):
     seen = set()
@@ -379,6 +387,8 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
                 lambda: detect_space_differences(
                     ref_ocr.boxes,
                     sus_ocr.boxes,
+                    authentic_bgr,
+                    suspect_bgr,
                 ),
             ),
             (
@@ -386,6 +396,15 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
                 lambda: detect_spacing_differences(
                     ref_ocr.boxes,
                     sus_ocr.boxes,
+                ),
+            ),
+            (
+                "Carton Wide Spacing",
+                lambda: detect_carton_spacing_issues(
+                    ref_ocr.boxes,
+                    sus_ocr.boxes,
+                    authentic_bgr,
+                    suspect_bgr,
                 ),
             ),
             (
@@ -397,18 +416,9 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
                     suspect_bgr,
                 ),
             ),
-            #(
-             #   "Strict OCR comparison",
-              #  lambda: strict_match_ocr(
-               #     ref_ocr.boxes,
-                #    sus_ocr.boxes,
-                 #   authentic_bgr.shape,
-                  #  suspect_bgr.shape,
-                #),
-            #),
             (
-                "Generic Vertical Text Comparison",
-                lambda: detect_vertical_text_differences(
+                "Strict OCR comparison",
+                lambda: strict_match_ocr(
                     ref_ocr.boxes,
                     sus_ocr.boxes,
                     authentic_bgr.shape,
@@ -420,8 +430,8 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
                 lambda: compare_typography(
                     ref_ocr.boxes,
                     sus_ocr.boxes,
-                    authentic_bgr,
-                    suspect_bgr,
+                    authentic_bgr.shape,
+                    suspect_bgr.shape,
                 ),
             ),
         ]
@@ -433,14 +443,50 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
                     found = []
 
                 print(f"{name}: {len(found)} issues")
+                if name == "Space Difference":
+                    print("SPACE DIFFERENCE DEBUG:", found)
+
                 issues.extend(found)
 
             except Exception as e:
                 print(f"{name} failed:", e)
 
+        '''try:
+            spacing_issues = compare_character_spacing(
+                authentic_bgr,
+                suspect_bgr,
+                ref_ocr.boxes,
+                sus_ocr.boxes,
+            )
+
+            print("CHAR SPACING DEBUG:", spacing_issues)
+
+            if spacing_issues:
+                if isinstance(spacing_issues, list):
+                    issues.extend(spacing_issues)
+                else:
+                    issues.append(spacing_issues)
+
+        except Exception as e:
+            print("Character spacing comparison failed:", e)'''
+
         issues = _filter_low_quality_issues(issues)
         issues = _dedupe_issues(issues)
         issues = _merge_same_crop_issues(issues)
+
+        '''evidence_pairs = {}
+        for idx, issue in enumerate(issues):
+            if not issue.get("evidence_id"):
+                issue["evidence_id"] = f"evidence_{idx}"
+
+            ref_bbox = issue.get("ref_bbox") or issue.get("reference_bbox")
+            sus_bbox = issue.get("suspect_bbox") or issue.get("uploaded_bbox")
+
+            if ref_bbox and sus_bbox:
+                evidence_pairs[issue["evidence_id"]] = {
+                    "ref": _crop(authentic_bgr, ref_bbox),
+                    "sus": _crop(suspect_bgr, sus_bbox),
+              }'''
 
         score = score_authenticity(issues)
         verdict = verdict_from_score(score)
@@ -469,7 +515,9 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
                 print(f"Suspect crop failed for issue {idx + 1}: {e}")
 
         if ref_crop_path or sus_crop_path:
-            evidence_pairs[idx] = {
+            evidence_id = issue.get("evidence_id") or f"evidence_{idx}"
+            issue["evidence_id"] = evidence_id
+            evidence_pairs[evidence_id] = {
                 "ref": ref_crop_path,
                 "sus": sus_crop_path,
             }
@@ -523,6 +571,7 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
         },
         "score": score,
         "verdict": verdict,
+        "evidence_pairs": evidence_pairs,
         "report_path": str(report_path),
         "medicine_blocked": medicine_block,
         "medicine_message": medicine_message,

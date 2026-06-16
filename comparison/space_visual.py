@@ -1,5 +1,6 @@
 import re
-
+from rapidfuzz import fuzz
+from comparison.character_analysis.char_spacing import compare_character_spacing
 
 def _clean(text):
     return re.sub(r"[^a-z0-9]+", "", str(text or "").lower())
@@ -98,7 +99,7 @@ def _best_matching_line(ref_line, sus_lines):
     return None
 
 
-def detect_space_differences(ref_boxes, sus_boxes):
+def detect_space_differences(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
     issues = []
 
     ref_lines = _group_same_line(ref_boxes)
@@ -112,6 +113,12 @@ def detect_space_differences(ref_boxes, sus_boxes):
 
         ref_text = _line_text(ref_line)
         sus_text = _line_text(sus_line)
+        if fuzz.ratio(_clean(ref_text), _clean(sus_text)) < 88:
+            continue
+        if len(ref_text) > 80 or len(sus_text) > 80:
+            continue
+        if len(_clean(ref_text)) < 6:
+            continue
 
         ref_norm = _clean(ref_text)
         sus_norm = _clean(sus_text)

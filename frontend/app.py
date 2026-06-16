@@ -344,7 +344,7 @@ if portal == "User Portal":
             else:
                 for i, issue in enumerate(result["issues"], 1):
                     severity = str(issue.get("severity", "Medium")).lower()
-
+                    
                     st.markdown(f"""
                     <div class="diff-card {severity}">
                         <h4>Difference {i}: {issue.get("issue_type", "Issue")}</h4>
@@ -356,11 +356,9 @@ if portal == "User Portal":
                     </div>
                     """, unsafe_allow_html=True)
 
-                    pair = (
-                        result["evidence_pairs"].get(str(i - 1))
-                        or result["evidence_pairs"].get(i - 1)
+                    pair = result["evidence_pairs"].get(
+                        issue.get("evidence_id")
                     )
-
                     if pair:
                         ec1, ec2 = st.columns(2)
 
