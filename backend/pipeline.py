@@ -386,8 +386,6 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
                 lambda: detect_spacing_differences(
                     ref_ocr.boxes,
                     sus_ocr.boxes,
-                    ref_ocr.boxes,
-                    sus_ocr.boxes,
                 ),
             ),
             (
@@ -418,8 +416,8 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
                 ),
             ),
             (
-                "Letter Spacing",
-                lambda: compare_letter_spacing(
+                "Typography and Letter Spacing",
+                lambda: compare_typography(
                     ref_ocr.boxes,
                     sus_ocr.boxes,
                     authentic_bgr,
