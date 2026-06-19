@@ -52,7 +52,10 @@ def _safe_text(value):
 
 def _get_evidence_pair(evidence_pairs, idx_zero_based):
     if isinstance(evidence_pairs, dict):
-        return evidence_pairs.get(idx_zero_based)
+        pair = evidence_pairs.get(idx_zero_based)
+        if pair is None:
+            pair = evidence_pairs.get(f"evidence_{idx_zero_based}")
+        return pair
 
     if isinstance(evidence_pairs, list) and idx_zero_based < len(evidence_pairs):
         return evidence_pairs[idx_zero_based]
@@ -246,6 +249,8 @@ def generate_pdf_report(
         pair = None
         if isinstance(evidence_pairs, dict):
             pair = evidence_pairs.get(idx - 1)
+            if pair is None:
+                pair = evidence_pairs.get(f"evidence_{idx - 1}")
         elif isinstance(evidence_pairs, list) and idx - 1 < len(evidence_pairs):
             pair = evidence_pairs[idx - 1]
 

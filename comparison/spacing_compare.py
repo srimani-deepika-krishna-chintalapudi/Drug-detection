@@ -1,6 +1,7 @@
 import re
 import numpy as np
 from rapidfuzz import fuzz
+from comparison.pharma_text_utils import is_critical_pharma_text, is_address_or_location_text
 
 
 def box_center(bbox):
@@ -173,9 +174,15 @@ def detect_spacing_differences(
         if len(ref_plain) < 4 or len(sus_plain) < 4:
             continue
 
+        is_addr = is_address_or_location_text(ref_text)
+        is_crit = is_critical_pharma_text(ref_text)
+
         # 1. Same letters, but spaces or separators changed
         if ref_plain == sus_plain and ref_norm != sus_norm:
-            issues.append(make_issue(
+            if is_addr and not is_crit:
+                pass # skip pure space change in address
+            else:
+                issues.append(make_issue(
                 "space_difference",
                 ref_text,
                 sus_text,
@@ -194,7 +201,13 @@ def detect_spacing_differences(
             for ref_gap, sus_gap in zip(ref_gaps, sus_gaps):
                 diff = abs(ref_gap["norm_gap"] - sus_gap["norm_gap"])
 
-                if diff >= word_gap_threshold:
+                word_thresh = word_gap_threshold
+                if is_addr and not is_crit:
+                    word_thresh = 0.8
+                elif not is_crit:
+                    word_thresh = 0.65
+
+                if diff >= word_thresh:
                     issues.append(make_issue(
                         "word_width_spacing",
                         ref_text,
@@ -217,7 +230,13 @@ def detect_spacing_differences(
             sus_score = char_spacing_score(sus_line)
             diff = abs(ref_score - sus_score)
 
-            if diff >= char_spacing_threshold:
+            char_thresh = char_spacing_threshold
+            if is_addr and not is_crit:
+                char_thresh = 0.35
+            elif not is_crit:
+                char_thresh = 0.26
+
+            if diff >= char_thresh:
                 issues.append(make_issue(
                     "letter_spacing",
                     ref_text,

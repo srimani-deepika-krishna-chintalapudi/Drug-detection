@@ -268,6 +268,7 @@ if portal == "User Portal":
                 ref_path,
                 suspect_path,
                 scan_mode=scan_mode,
+                medicine_name=selected_medicine,
             )
 
         st.markdown("## ✅ Verification Summary")

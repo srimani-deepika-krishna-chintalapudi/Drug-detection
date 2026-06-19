@@ -1,6 +1,7 @@
 import re
 from rapidfuzz import fuzz
 from comparison.character_analysis.char_spacing import compare_character_spacing
+from comparison.pharma_text_utils import is_critical_pharma_text, is_address_or_location_text
 
 def _clean(text):
     return re.sub(r"[^a-z0-9]+", "", str(text or "").lower())
@@ -138,7 +139,16 @@ def detect_space_differences(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
         for i in range(n):
             diff = abs(ref_gaps[i] - sus_gaps[i])
 
-            if diff >= 0.45:
+            is_addr = is_address_or_location_text(ref_text)
+            is_crit = is_critical_pharma_text(ref_text)
+            
+            threshold = 0.45
+            if is_addr and not is_crit:
+                threshold = 0.8
+            elif not is_crit:
+                threshold = 0.6
+
+            if diff >= threshold:
                 issues.append({
                     "issue_type": "space_difference",
                     "reference": ref_text,

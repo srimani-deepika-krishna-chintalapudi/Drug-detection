@@ -1,9 +1,18 @@
 from pathlib import Path
 import cv2
+from comparison.spelling_mismatch_detector import detect_spelling_mismatches
+from comparison.text_pair_matcher import get_matched_text_pairs
+from comparison.text_spacing_detector import detect_text_spacing_differences
+from comparison.char_symbol_gap_detector import detect_char_symbol_gap_differences
+from comparison.spacing_mismatch_detector import detect_spacing_mismatches
+from comparison.tablet_name_verifier import verify_tablet_name
+from comparison.strict_layout_string_detector import detect_strict_layout_string_differences
+from comparison.generic_text_spacing import detect_generic_text_spacing
 from comparison.carton_spacing import detect_carton_spacing_issues
 from comparison.character_analysis.char_spacing import compare_character_spacing
 from comparison.vertical_text_compare import detect_vertical_text_differences
 import numpy as np
+from comparison.spacing_generic import detect_generic_spacing_issues
 from comparison.auto_label_regions import detect_auto_label_region_differences
 import re
 from comparison.spacing_compare import detect_spacing_differences
@@ -34,7 +43,8 @@ from backend.scoring import score_authenticity, verdict_from_score
 from reports.pdf_report import generate_pdf_report
 from database.db import create_comparison, add_difference
 
-
+import os
+print(f"PIPELINE FILE LOADED: {__file__}")
 def _ocr_text(ocr_obj):
     return getattr(ocr_obj, "full_text", "") or ""
 
@@ -82,7 +92,7 @@ def _filter_low_quality_issues(issues):
     clean = []
     
     visual_issue_types = {
-        "word_width_spacing",
+        "word_width_spacing","char_symbol_spacing_mismatch",
         "text_width_spacing","space_difference",
         "letter_spacing","auto_label_region_difference",
         "code_mismatch","spelling_mismatch",
@@ -104,7 +114,53 @@ def _filter_low_quality_issues(issues):
     }
 
     for issue in issues:
-        issue_type = issue.get("issue_type", "")
+        issue_type = str(issue.get("issue_type", "")).lower()
+        if issue_type == "spelling_mismatch":
+            clean.append(issue)
+            continue
+        if issue_type == "text_spacing_mismatch":
+            clean.append(issue)
+            continue
+
+        if issue_type in {
+            "strict_spacing_mismatch",
+            "strict_string_mismatch","char_symbol_spacing_mismatch",
+            "vertical_orientation_mismatch",
+            "vertical_layout_shift",
+            "spacing_mismatch",
+        }:
+            clean.append(issue)
+            continue
+
+        text_blob = " ".join([
+            str(issue.get("reference_text", "")),
+            str(issue.get("suspect_text", "")),
+            str(issue.get("reference", "")),
+            str(issue.get("uploaded", "")),
+            str(issue.get("description", "")),
+            str(issue.get("difference", "")),
+        ]).lower()
+
+        address_words = [
+            "baddi", "solan", "h.p", "hp", "distt", "district",
+            "village", "road", "plot", "industrial", "area",
+            "pradesh", "india", "khurd", "bhatauli", "bhatouli"
+        ]
+
+        is_address_issue = any(w in text_blob for w in address_words)
+
+        if is_address_issue and issue_type in [
+            "word_width_spacing",
+            "letter_spacing_change",
+            "spacing_difference",
+            "generic_spacing_difference",
+            "auto_label_region_difference",
+        ]:
+            print("REMOVED ADDRESS/LOCATION FALSE POSITIVE:", text_blob[:120])
+            continue
+        if is_address_issue and issue_type in ["missing_text", "extra_text", "text_mismatch"]:
+            clean.append(issue)
+            continue
         confidence = float(issue.get("confidence", 0) or 0)
         if issue_type in ["character_spacing","letter_spacing_change","word_width_spacing"]:
             issue.setdefault("ref_bbox", issue.get("bbox") or issue.get("reference_bbox"))
@@ -121,13 +177,15 @@ def _filter_low_quality_issues(issues):
         has_ref = bool(issue.get("ref_bbox"))
         has_sus = bool(issue.get("suspect_bbox"))
 
-        if issue_type == "medicine":
+        if issue_type in ["medicine", "tablet_name_mismatch"]:
             clean.append(issue)
             continue
 
         if confidence < 65:
             continue
-
+        if issue_type in ["space_difference","character_spacing","word_or_symbol_spacing",]:
+            clean.append(issue)
+            continue
         if issue_type == "punctuation":
             if not _same_base_text_ignore_punctuation(ref_text, sus_text):
                 continue
@@ -155,7 +213,7 @@ def _filter_low_quality_issues(issues):
                 continue
 
             allow_different_text_types = {
-                "logo_layout",
+                "logo_layout","char_symbol_spacing_mismatch",
                 "colon_spacing","auto_label_region_difference",
                 "vertical_text_mismatch",
                 "location_spelling_mismatch","spelling_mismatch","word_width_spacing",
@@ -254,8 +312,32 @@ def _merge_same_crop_issues(issues):
         added = False
         ref_box = issue.get("ref_bbox")
         sus_box = issue.get("suspect_bbox")
+        issue_type = str(issue.get("issue_type", "")).lower()
+
+        if issue_type == "spelling_mismatch":
+            merged.append(issue)
+            continue
+
+        if issue_type == "text_spacing_mismatch":
+            merged.append(issue)
+            continue
+
+        if issue_type in {
+            "tablet_name_mismatch",
+            "strict_spacing_mismatch",
+            "char_symbol_spacing_mismatch",
+            "strict_string_mismatch",
+            "vertical_orientation_mismatch",
+            "vertical_layout_shift",
+            "spacing_mismatch",
+        }:
+            merged.append(issue)
+            continue
 
         for existing in merged:
+            if existing.get("issue_type") == "tablet_name_mismatch":
+                continue
+
             ref_iou = _bbox_iou(ref_box, existing.get("ref_bbox"))
             sus_iou = _bbox_iou(sus_box, existing.get("suspect_bbox"))
 
@@ -277,7 +359,7 @@ def _merge_same_crop_issues(issues):
                     float(issue.get("confidence", 0) or 0),
                 )
 
-                if issue.get("severity") == "High":
+                if issue.get("severity") == "High" or issue.get("severity") == "high":
                     existing["severity"] = "High"
 
                 added = True
@@ -288,10 +370,130 @@ def _merge_same_crop_issues(issues):
 
     return merged
 
+def _strict_meaningful_issue_filter(issues):
+    clean = []
 
-def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
+    weak_spacing_types = {
+        "space_difference",
+        "character_spacing",
+        "word_or_symbol_spacing",
+        "carton_spacing_difference",
+    }
+
+    for issue in issues:
+
+        print(
+            "STRICT CHECK:",
+            issue.get("issue_type"),
+            issue.get("confidence"),
+            issue.get("difference"),
+        )
+
+        issue_type = str(issue.get("issue_type", "")).lower()
+        diff = str(issue.get("difference", "")).lower()
+        confidence = float(issue.get("confidence", 0) or 0)
+
+        if issue_type == "spelling_mismatch":
+            print("KEPT:", issue_type)
+            clean.append(issue)
+            continue
+
+        if issue_type == "text_spacing_mismatch":
+            print("KEPT:", issue_type)
+            clean.append(issue)
+            continue
+
+        if issue_type in {
+            "strict_spacing_mismatch",
+            "strict_string_mismatch","char_symbol_spacing_mismatch",
+            "vertical_orientation_mismatch",
+            "vertical_layout_shift",
+            "spacing_mismatch",
+        }:
+            print("KEPT:", issue_type)
+            clean.append(issue)
+            continue
+
+        if issue_type in {
+            "strict_spacing_mismatch",
+            "strict_string_mismatch",
+            "vertical_orientation_mismatch",
+            "vertical_layout_shift",
+        }:
+            print("KEPT:", issue_type)
+            clean.append(issue)
+            continue
+
+        if issue_type == "spacing_mismatch":
+            if (
+                issue.get("severity") == "high"
+                or confidence >= 0.75
+            ):
+                print("KEPT: spacing_mismatch")
+                clean.append(issue)
+            continue
+
+        # Strict spacing rule
+        if issue_type in weak_spacing_types:
+            if confidence < 90:
+                print("REMOVED: low confidence spacing issue")
+                continue
+
+            minor_words = [
+                "minor",
+                "mean gap",
+                "normalized gap",
+                "single extra space",
+                "padding",
+                "slight",
+            ]
+
+            if any(w in diff for w in minor_words):
+                print("REMOVED: weak spacing difference")
+                continue
+
+        # Strict spelling/text rule
+        if issue_type in {
+            "text_mismatch",
+            "ocr_text_mismatch",
+            "spelling_difference",
+            "word_difference",
+        }:
+            ref = str(issue.get("reference", "")).strip()
+            sus = str(issue.get("uploaded", "")).strip()
+
+            if not ref or not sus:
+                clean.append(issue)
+                continue
+
+            if len(ref) >= 5 and len(sus) >= 5:
+                from rapidfuzz import fuzz
+
+                similarity = fuzz.ratio(ref.lower(), sus.lower())
+
+                print("TEXT SIMILARITY:", similarity)
+
+                if similarity >= 88:
+                    print("REMOVED: likely valid variant")
+                    continue
+
+            if confidence < 85:
+                print("REMOVED: low confidence text issue")
+                continue
+
+        print("KEPT:", issue_type)
+        clean.append(issue)
+
+    return clean
+
+def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False,medicine_name=None):
     authentic_bgr_original = read_bgr(authentic_path)
     suspect_bgr_original = read_bgr(suspect_path)
+    print("COMPARE_CARTONS CALLED")
+    print(f"medicine_name received in compare_cartons: {medicine_name}")
+    print("### REAL COMPARE_CARTONS RUNNING ###")
+    print("### PIPELINE FILE:", __file__)
+    print("### MEDICINE NAME RECEIVED:", medicine_name)
 
     same_image = _is_same_image(authentic_bgr_original, suspect_bgr_original)
 
@@ -306,7 +508,6 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
     suspect_enh = enhance_color_image(suspect_bgr)
 
     engine = PaddleOCREngine()
-
     ref_ocr = engine.run(authentic_bgr, "authentic")
     sus_ocr = engine.run(suspect_bgr, "suspect")
 
@@ -322,6 +523,7 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
 
     medicine_block = False
     medicine_message = ""
+
 
     if ref_med_name and sus_med_name and ref_med_name != sus_med_name:
         medicine_block = True
@@ -383,39 +585,87 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
                 ),
             ),
             (
-                "Space Difference",
-                lambda: detect_space_differences(
+                "Text Spacing Detector",
+                lambda: detect_text_spacing_differences(
                     ref_ocr.boxes,
                     sus_ocr.boxes,
                     authentic_bgr,
                     suspect_bgr,
+                    medicine_name=medicine_name,
+                    gap_threshold_percent=12.0,
                 ),
             ),
+            #(
+             #   "Space Difference",
+              #  lambda: detect_space_differences(
+               #     ref_ocr.boxes,
+                #    sus_ocr.boxes,
+                 #   authentic_bgr,
+                  #  suspect_bgr,
+                #),
+            #),
+            #(
+             #   "Generic Text Character Spacing",
+              #  lambda: detect_generic_text_spacing(
+               #     ref_ocr.boxes,
+                #    sus_ocr.boxes,
+                 #   authentic_bgr,
+                  #  suspect_bgr,
+                #),
+            #),
+            #(
+             #   "Generic Spacing Comparison",
+              #  lambda: detect_spacing_differences(
+               #     ref_ocr.boxes,
+                #    sus_ocr.boxes,
+                #),
+            #),
+            #(
+             #   "Auto Label Region Comparison",
+              #  lambda: detect_auto_label_region_differences(
+               #     ref_ocr.boxes,
+                #    sus_ocr.boxes,
+                 #   authentic_bgr,
+                  #  suspect_bgr,
+            #),
+            #),
+            #(
+             #   "Dedicated Spacing Mismatch",
+              ##     ref_ocr.boxes,
+                #    sus_ocr.boxes,
+                 ##  suspect_bgr,
+                   # medicine_name=medicine_name,
+                    #threshold_percent=5.0,
+                #),
+            #),
+            #(
+             #   "Strict Layout String Detector",
+              ###    sus_ocr.boxes,
+                 #   authentic_bgr,
+                  ## medicine_name=medicine_name,
+              #  ),
+            #),
+            #(
+             #   "Char Symbol Gap Detector",
+              #  lambda: detect_char_symbol_gap_differences(
+               #     ref_ocr.boxes,
+                #    sus_ocr.boxes,
+                 #   authentic_bgr,
+                  #  suspect_bgr,
+                   # medicine_name=medicine_name,
+                    #threshold_percent=35.0,
+               # ),
+            #),
             (
-                "Generic Spacing Comparison",
-                lambda: detect_spacing_differences(
-                    ref_ocr.boxes,
-                    sus_ocr.boxes,
-                ),
+            "Spelling Mismatch Detector",
+            lambda: detect_spelling_mismatches(
+                ref_ocr.boxes,
+                sus_ocr.boxes,
+                authentic_bgr,
+                suspect_bgr,
+                medicine_name=medicine_name,
             ),
-            (
-                "Carton Wide Spacing",
-                lambda: detect_carton_spacing_issues(
-                    ref_ocr.boxes,
-                    sus_ocr.boxes,
-                    authentic_bgr,
-                    suspect_bgr,
-                ),
-            ),
-            (
-                "Auto Label Region Comparison",
-                lambda: detect_auto_label_region_differences(
-                    ref_ocr.boxes,
-                    sus_ocr.boxes,
-                    authentic_bgr,
-                    suspect_bgr,
-                ),
-            ),
+        ),
             (
                 "Strict OCR comparison",
                 lambda: strict_match_ocr(
@@ -426,15 +676,15 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
                 ),
             ),
             (
-                "Typography and Letter Spacing",
-                lambda: compare_typography(
+                "Text Pair Matching",
+                lambda: get_matched_text_pairs(
                     ref_ocr.boxes,
                     sus_ocr.boxes,
                     authentic_bgr.shape,
                     suspect_bgr.shape,
-                ),
-            ),
-        ]
+                )
+            )
+     ]
 
         for name, detector in detectors:
             try:
@@ -443,6 +693,7 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
                     found = []
 
                 print(f"{name}: {len(found)} issues")
+
                 if name == "Space Difference":
                     print("SPACE DIFFERENCE DEBUG:", found)
 
@@ -451,46 +702,44 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
             except Exception as e:
                 print(f"{name} failed:", e)
 
-        '''try:
-            spacing_issues = compare_character_spacing(
-                authentic_bgr,
-                suspect_bgr,
+        # PUT TABLET NAME VERIFIER HERE — OUTSIDE THE LOOP
+        try:
+            print("TABLET NAME VERIFIER RUNNING")
+            print("Tablet target name from UI:", medicine_name)
+
+            tablet_name_issues = verify_tablet_name(
                 ref_ocr.boxes,
                 sus_ocr.boxes,
+                authentic_bgr,
+                suspect_bgr,
+                medicine_name,
+                threshold_percent=5.0,
             )
-
-            print("CHAR SPACING DEBUG:", spacing_issues)
-
-            if spacing_issues:
-                if isinstance(spacing_issues, list):
-                    issues.extend(spacing_issues)
-                else:
-                    issues.append(spacing_issues)
+            print(f"Tablet Name Verification: {len(tablet_name_issues)} issues")
+            issues.extend(tablet_name_issues)
 
         except Exception as e:
-            print("Character spacing comparison failed:", e)'''
-
+            print("Tablet Name Verification failed:", e)
+        
         issues = _filter_low_quality_issues(issues)
         issues = _dedupe_issues(issues)
         issues = _merge_same_crop_issues(issues)
+        print(
+            "BEFORE STRICT FILTER:",
+            len(issues),
+            [i.get("issue_type") for i in issues],
+        )
 
-        '''evidence_pairs = {}
-        for idx, issue in enumerate(issues):
-            if not issue.get("evidence_id"):
-                issue["evidence_id"] = f"evidence_{idx}"
+        issues = _strict_meaningful_issue_filter(issues)
 
-            ref_bbox = issue.get("ref_bbox") or issue.get("reference_bbox")
-            sus_bbox = issue.get("suspect_bbox") or issue.get("uploaded_bbox")
-
-            if ref_bbox and sus_bbox:
-                evidence_pairs[issue["evidence_id"]] = {
-                    "ref": _crop(authentic_bgr, ref_bbox),
-                    "sus": _crop(suspect_bgr, sus_bbox),
-              }'''
+        print(
+            "AFTER STRICT FILTER:",
+            len(issues),
+            [i.get("issue_type") for i in issues],
+        )
 
         score = score_authenticity(issues)
         verdict = verdict_from_score(score)
-                
 
     evidence_pairs = {}
 
@@ -502,21 +751,29 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
             try:
                 ref_crop = crop_bbox(authentic_bgr, issue["ref_bbox"])
                 ref_crop = _rotate_crop_if_vertical(ref_crop, issue["ref_bbox"])
-                ref_crop_path = write_image(run_dir / f"evidence_{idx + 1}_ref.png", ref_crop)
+                ref_crop_path = write_image(
+                    run_dir / f"evidence_{idx + 1}_ref.png",
+                    ref_crop,
+                )
             except Exception as e:
                 print(f"Reference crop failed for issue {idx + 1}: {e}")
+
 
         if issue.get("suspect_bbox"):
             try:
                 sus_crop = crop_bbox(suspect_bgr, issue["suspect_bbox"])
                 sus_crop = _rotate_crop_if_vertical(sus_crop, issue["suspect_bbox"])
-                sus_crop_path = write_image(run_dir / f"evidence_{idx + 1}_suspect.png", sus_crop)
+                sus_crop_path = write_image(
+                    run_dir / f"evidence_{idx + 1}_suspect.png",
+                    sus_crop,
+                )
             except Exception as e:
                 print(f"Suspect crop failed for issue {idx + 1}: {e}")
 
         if ref_crop_path or sus_crop_path:
             evidence_id = issue.get("evidence_id") or f"evidence_{idx}"
             issue["evidence_id"] = evidence_id
+
             evidence_pairs[evidence_id] = {
                 "ref": ref_crop_path,
                 "sus": sus_crop_path,
@@ -549,7 +806,9 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
     )
 
     for idx, issue in enumerate(issues):
-        pair = evidence_pairs.get(idx, {})
+        evidence_id = issue.get("evidence_id")
+        pair = evidence_pairs.get(evidence_id, {})
+
         add_difference(
             comparison_id,
             issue,
@@ -571,7 +830,6 @@ def compare_cartons(authentic_path: Path, suspect_path: Path, scan_mode=False):
         },
         "score": score,
         "verdict": verdict,
-        "evidence_pairs": evidence_pairs,
         "report_path": str(report_path),
         "medicine_blocked": medicine_block,
         "medicine_message": medicine_message,

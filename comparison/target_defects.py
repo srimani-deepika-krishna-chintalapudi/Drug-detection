@@ -1,18 +1,18 @@
 import re
 import cv2
-import numpy as np
 from difflib import SequenceMatcher
+from rapidfuzz import fuzz
 
 
 def clean(text):
     return re.sub(r"[^a-z0-9]+", "", str(text or "").lower())
 
 
-def sim(a, b):
+def similarity(a, b):
     a = clean(a)
     b = clean(b)
 
-    if not a or not not b:
+    if not a or not b:
         return 0.0
 
     if a == b:
@@ -21,9 +21,19 @@ def sim(a, b):
     return SequenceMatcher(None, a, b).ratio()
 
 
-def center(bbox):
+def is_vertical(box):
+    bbox = box.get("bbox")
+    if not bbox or len(bbox) != 4:
+        return False
+
+    if box.get("orientation") == "vertical" or box.get("is_vertical"):
+        return True
+
     x1, y1, x2, y2 = bbox
-    return (x1 + x2) / 2, (y1 + y2) / 2
+    w = max(1, x2 - x1)
+    h = max(1, y2 - y1)
+
+    return h / w > 2.0
 
 
 def group_lines(boxes):
@@ -88,7 +98,7 @@ def best_match(item, candidates, min_score=0.35):
         ccx = (cx1 + cx2) / 2
         ccy = (cy1 + cy2) / 2
 
-        text_score = sim(item["text"], c["text"])
+        text_score = similarity(item["text"], c["text"])
         position_score = max(
             0.0,
             1.0 - ((abs(icx - ccx) + abs(icy - ccy)) / 1200.0),
@@ -104,17 +114,6 @@ def best_match(item, candidates, min_score=0.35):
         return best, best_score
 
     return None, best_score
-
-
-def is_vertical(box):
-    if box.get("orientation") == "vertical" or box.get("is_vertical"):
-        return True
-
-    x1, y1, x2, y2 = box["bbox"]
-    w = max(1, x2 - x1)
-    h = max(1, y2 - y1)
-
-    return h / w > 2.0
 
 
 def crop_region(img, bbox, pad=8):
@@ -227,46 +226,18 @@ def measure_space_before_colon(img, bbox):
 
 
 def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
+    print("NEW TARGET DEFECTS CODE RUNNING...")
+
     issues = []
 
     ref_lines = group_lines(ref_boxes)
     sus_lines = group_lines(sus_boxes)
-        # Generic right-side Batch/MFG/EXP/MRP vertical strip fallback
-    if ref_img is not None and sus_img is not None:
-        rh, rw = ref_img.shape[:2]
-        sh, sw = sus_img.shape[:2]
 
-        ref_bbox = [
-            int(rw * 0.72),
-            int(rh * 0.02),
-            int(rw * 0.98),
-            int(rh * 0.98),
-        ]
-
-        sus_bbox = [
-            int(sw * 0.72),
-            int(sh * 0.02),
-            int(sw * 0.98),
-            int(sh * 0.98),
-        ]
-
-        issues.append({
-            "issue_type": "tag_region_mismatch",
-            "reference": "Batch/MFG/EXP/MRP region",
-            "uploaded": "Batch/MFG/EXP/MRP region",
-            "difference": "Batch/MFG/EXP/MRP printed region requires visual comparison.",
-            "severity": "High",
-            "confidence": 90,
-            "ref_bbox": ref_bbox,
-            "suspect_bbox": sus_bbox,
-        })
-
-        # 1. Generic Batch/MFG/EXP/MRP region comparison
+    '''# 1. Generic Batch/MFG/EXP/MRP region comparison
     tag_words = [
-        "batch", "bno", "bno", "mfg", "mfd",
+        "batch", "bno", "mfg", "mfd",
         "exp", "expiry", "mrp", "rs"
     ]
-    print("NEW TARGET DEFECTS CODE RUNNING...")
 
     def is_tag_box(box):
         text = clean(box.get("text", ""))
@@ -283,7 +254,6 @@ def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
         if not tag_boxes:
             return None, ""
 
-        # expand region around detected tag boxes
         x1 = min(b["bbox"][0] for b in tag_boxes)
         y1 = min(b["bbox"][1] for b in tag_boxes)
         x2 = max(b["bbox"][2] for b in tag_boxes)
@@ -297,7 +267,6 @@ def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
         x2 = min(w, x2 + pad_x)
         y2 = min(h, y2 + pad_y)
 
-        # prevent full-carton crop
         if (x2 - x1) > w * 0.65:
             cx = (x1 + x2) // 2
             half = int(w * 0.30)
@@ -319,16 +288,20 @@ def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
 
     if ref_tag_bbox and sus_tag_bbox:
         if clean(ref_tag_text) != clean(sus_tag_text):
-            issues.append({
-                "issue_type": "tag_region_mismatch",
-                "reference": ref_tag_text,
-                "uploaded": sus_tag_text,
-                "difference": "Batch/MFG/EXP/MRP printed region differs.",
-                "severity": "High",
-                "confidence": 92,
-                "ref_bbox": ref_tag_bbox,
-                "suspect_bbox": sus_tag_bbox,
-            })
+            tag_sim_score = fuzz.ratio(clean(ref_tag_text), clean(sus_tag_text))
+
+            if tag_sim_score < 75:
+                issues.append({
+                    "issue_type": "tag_region_mismatch",
+                    "reference": ref_tag_text,
+                    "uploaded": sus_tag_text,
+                    "difference": "Critical Batch/MFG/EXP/MRP printed region has major text mismatch.",
+                    "severity": "High",
+                    "confidence": 92,
+                    "ref_bbox": ref_tag_bbox,
+                    "suspect_bbox": sus_tag_bbox,
+                })
+'''
     # 2. Bhatauli/Bhatouli spelling only
     for r in ref_lines:
         r_clean = clean(r["text"])
@@ -352,7 +325,7 @@ def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
         if not (ref_has and sus_has):
             continue
 
-        if sim(r["text"], s["text"]) < 0.95:
+        if similarity(r["text"], s["text"]) < 0.95:
             continue
 
         issues.append({
@@ -366,7 +339,7 @@ def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
             "suspect_bbox": s["bbox"],
         })
 
-    # 3. Visible spacing before colon using raw OCR boxes
+    # 3. Visible spacing before colon
     colon_keywords = [
         "contains",
         "dosage",
@@ -394,7 +367,7 @@ def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
 
         for sb in sus_candidates:
             st = str(sb.get("text", "")).strip()
-            score = sim(rt, st)
+            score = similarity(rt, st)
 
             if score > best_score:
                 best_score = score
@@ -453,26 +426,55 @@ def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
         if b.get("bbox") and is_vertical(b)
     ]
 
+    used_sus = set()
+
     for rb in ref_v:
         rt = str(rb.get("text", "")).strip()
         rt_clean = clean(rt)
 
-        if len(rt_clean) < 6:
+        if len(rt_clean) < 4:
             continue
 
         best = None
         best_score = 0.0
+        best_idx = None
 
-        for sb in sus_v:
+        rx1, ry1, rx2, ry2 = rb["bbox"]
+        rcx = (rx1 + rx2) / 2
+        rcy = (ry1 + ry2) / 2
+
+        for idx, sb in enumerate(sus_v):
+            if idx in used_sus:
+                continue
+
             st = str(sb.get("text", "")).strip()
-            score = sim(rt, st)
+            st_clean = clean(st)
 
-            if score > best_score:
-                best_score = score
+            if len(st_clean) < 4:
+                continue
+
+            sx1, sy1, sx2, sy2 = sb["bbox"]
+            scx = (sx1 + sx2) / 2
+            scy = (sy1 + sy2) / 2
+
+            text_score = similarity(rt, st)
+
+            pos_score = max(
+                0.0,
+                1.0 - ((abs(rcx - scx) + abs(rcy - scy)) / 1400.0),
+            )
+
+            final_score = text_score * 0.70 + pos_score * 0.30
+
+            if final_score > best_score:
+                best_score = final_score
                 best = sb
+                best_idx = idx
 
-        if best is None or best_score < 0.75:
+        if best is None or best_score < 0.60:
             continue
+
+        used_sus.add(best_idx)
 
         st = str(best.get("text", "")).strip()
         st_clean = clean(st)
@@ -489,4 +491,5 @@ def detect_targeted_defects(ref_boxes, sus_boxes, ref_img=None, sus_img=None):
                 "suspect_bbox": best["bbox"],
             })
 
+    print("Targeted Defects:", len(issues), "issues")
     return issues
