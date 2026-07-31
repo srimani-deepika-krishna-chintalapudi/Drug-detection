@@ -193,8 +193,11 @@ def enrich(lines, image_shape):
 def position_distance(a, b):
     ax, ay = a["norm_center"]
     bx, by = b["norm_center"]
-    return math.sqrt((ax - bx) ** 2 + (ay - by) ** 2)
 
+    dx = ax - bx
+    dy = ay - by
+
+    return (dx**2 + dy**2) ** 0.5
 
 def size_difference(a, b):
     aw, ah = a["norm_size"]
@@ -205,39 +208,79 @@ def size_difference(a, b):
 
     return (dw + dh) / 2
 
+def extract_key_tokens(text):
+    text = canonical_text(text)
+    tokens = text.split()
+
+    return set([
+        t for t in tokens
+        if len(t) > 2 and t not in IGNORE_TOKENS
+    ])
+
+def iou(a, b):
+    ax1, ay1, ax2, ay2 = a["bbox"]
+    bx1, by1, bx2, by2 = b["bbox"]
+
+    inter_x1 = max(ax1, bx1)
+    inter_y1 = max(ay1, by1)
+    inter_x2 = min(ax2, bx2)
+    inter_y2 = min(ay2, by2)
+
+    if inter_x2 <= inter_x1 or inter_y2 <= inter_y1:
+        return 0.0
+
+    inter_area = (inter_x2 - inter_x1) * (inter_y2 - inter_y1)
+    a_area = (ax2 - ax1) * (ay2 - ay1)
+    b_area = (bx2 - bx1) * (by2 - by1)
+
+    return inter_area / float(a_area + b_area - inter_area)
 
 def can_match(a, b):
     if a["orientation"] != b["orientation"]:
         return False
-
-    sim = text_similarity(a.get("text", ""), b.get("text", ""))
+    if extract_key_tokens(a["text"]) != extract_key_tokens(b["text"]):
+        if text_similarity(a["text"], b["text"]) < 0.7:
+            return False
+    
     dist = position_distance(a, b)
-    size_diff = size_difference(a, b)
+    overlap = iou(a, b)
 
-    if sim >= 0.78:
-        return True
-
-    if sim >= 0.62 and dist <= 0.18:
-        return True
-
-    if dist > 0.14:
+    # HARD spatial reject
+    if dist > 0.18:
         return False
 
-    if size_diff > 1.20:
+    if overlap < 0.02:
         return False
 
-    return sim >= 0.35
-
+    return True
 
 def match_cost(a, b):
     if not can_match(a, b):
         return 9999
 
-    pos = position_distance(a, b)
-    size = size_difference(a, b)
-    sim = text_similarity(a.get("text", ""), b.get("text", ""))
+    tokens_a = extract_key_tokens(a.get("text", ""))
+    tokens_b = extract_key_tokens(b.get("text", ""))
 
-    return ((1 - sim) * 0.70) + (pos * 0.25) + (size * 0.05)
+    if not tokens_a or not tokens_b:
+        sim = 0.0
+    else:
+        sim = len(tokens_a & tokens_b) / max(1, len(tokens_a | tokens_b))
+    dist = position_distance(a, b)
+    overlap = iou(a, b)
+    size = size_difference(a, b)
+
+    return (
+        (1 - sim) * 0.5 +
+        dist * 0.3 +
+        (1 - overlap) * 0.15 +
+        size * 0.05
+    )
+
+def normalize_strict(text):
+    text = str(text or "").upper()
+    text = re.sub(r'[^A-Z0-9]', '', text)  # remove spaces, dots, punctuation
+    return text
+
 
 def should_report_text_mismatch(a, b, sim):
     a_text = a.get("normalized_text", "")
@@ -246,29 +289,31 @@ def should_report_text_mismatch(a, b, sim):
     if not a_text or not b_text:
         return False
 
-    if a_text == b_text:
+    # 🔴 NEW: ignore very short text (major FP source)
+    if len(a_text) < 6 or len(b_text) < 6:
         return False
 
-    # Always report number/code changes
-    if any(ch.isdigit() for ch in a_text + b_text):
-        return True
+    # 🔴 normalize aggressively
+    a_clean = normalize_strict(a_text)
+    b_clean = normalize_strict(b_text)
 
-    important_words = [
-        "village", "khurd", "bhatauli", "bhatouli",
-        "manufactured", "manufacturer", "india", "baddi",
-        "solan", "mumbai", "alkem", "abbott",
-        "contains", "dosage", "physician"
-    ]
-
-    combined = f"{a_text} {b_text}".lower()
-
-    if any(w in combined for w in important_words):
-        return True
-
-    if a_text in b_text or b_text in a_text:
+    # exact match after normalization → ignore
+    if a_clean == b_clean:
         return False
 
-    return sim < 0.72
+    # substring case → ignore (your MFG.FEB case)
+    if a_clean in b_clean or b_clean in a_clean:
+        return False
+
+    # 🔴 relaxed similarity threshold
+    if sim >= 0.90:
+        return False
+
+    # numbers still matter (batch, date etc.)
+    if any(ch.isdigit() for ch in a_clean + b_clean):
+        return sim < 0.95
+
+    return sim < 0.80
 
 def strict_match_ocr(ref_boxes, sus_boxes, ref_shape, sus_shape):
     ref_lines = merge_boxes_to_lines(ref_boxes, ref_shape)
@@ -300,10 +345,12 @@ def strict_match_ocr(ref_boxes, sus_boxes, ref_shape, sus_shape):
     matched_ref = set()
     matched_sus = set()
 
+    MAX_COST = 0.40  # tune between 0.35–0.45
+
     for r_idx, s_idx in zip(row_ind, col_ind):
         cost = cost_matrix[r_idx][s_idx]
 
-        if cost >= 9999:
+        if cost >= MAX_COST:
             continue
 
         r = ref[r_idx]
@@ -331,7 +378,8 @@ def strict_match_ocr(ref_boxes, sus_boxes, ref_shape, sus_shape):
         if (
             r["orientation"] == "vertical"
             and s["orientation"] == "vertical"
-            and sim >= 0.65
+            and sim >= 0.75
+            and not (normalize_strict(r["text"]) == normalize_strict(s["text"]))
         ):
             rx, ry = r["norm_center"]
             sx, sy = s["norm_center"]
@@ -339,7 +387,7 @@ def strict_match_ocr(ref_boxes, sus_boxes, ref_shape, sus_shape):
             x_shift = abs(rx - sx)
             y_shift = abs(ry - sy)
 
-            if x_shift > 0.025 or y_shift > 0.035:
+            if x_shift > 0.05 or y_shift > 0.30:
                 issues.append({
                     "issue_type": "vertical_text_alignment",
                     "reference": r.get("text", ""),
@@ -354,7 +402,7 @@ def strict_match_ocr(ref_boxes, sus_boxes, ref_shape, sus_shape):
                     "suspect_bbox": s.get("bbox"),
                 })
 
-        if (r["is_critical"] or s["is_critical"]) and sim >= 0.65 and dist > 0.085:
+        if (r["is_critical"] or s["is_critical"]) and sim >= 0.80 and dist > 0.15:
             issues.append({
                 "issue_type": "position_mismatch",
                 "reference": r.get("text", ""),
@@ -366,7 +414,7 @@ def strict_match_ocr(ref_boxes, sus_boxes, ref_shape, sus_shape):
                 "suspect_bbox": s.get("bbox"),
             })
 
-        if (r["is_critical"] or s["is_critical"]) and sim >= 0.65 and size_diff > 0.95:
+        if (r["is_critical"] or s["is_critical"]) and sim >= 0.65 and size_diff > 1.3:
             issues.append({
                 "issue_type": "size_mismatch",
                 "reference": r.get("text", ""),
